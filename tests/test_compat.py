@@ -93,6 +93,8 @@ assert ended == [1] and not p.playing and inh.held == 0
 p.play("/m/b.mp3")
 p.stop()
 assert inh.held == 0
+opt = sound.Player("x", options={"user_agent": "UA/1", "load_unsafe_playlists": True, "video": True})
+assert opt.options == {"user_agent": "UA/1"}  # the safe settings cannot be undone
 sys.modules["mpv"] = None  # libmpv missing: play() says so
 try:
     sound.Player("x", post=lambda fn: fn(), awake=Awake("x", "y", inhibit=inh)).play("/m/c")
