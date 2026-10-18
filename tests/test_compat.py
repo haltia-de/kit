@@ -143,6 +143,24 @@ with open(song, "wb") as fh:
 assert photos.thumbnail(song) is None
 assert os.listdir(os.path.join(top, "cache", "thumbnails", "fail", photos.FAIL))
 assert photos.thumbnail(song) is None  # the failure is remembered
+huge = os.path.join(top, "huge.png")  # a PNG claiming 20000 x 20000 pixels
+with open(huge, "wb") as fh:
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + \
+            struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+
+    fh.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 20000, 20000,
+                                                                  8, 2, 0, 0, 0)) +
+             chunk(b"IEND", b""))
+try:
+    photos.pixbuf_of(huge, 256)
+    raise AssertionError("a huge picture must not be decoded")
+except ValueError:
+    pass
+assert photos.thumbnail(huge) is None
 sq = photos.square(tp, 64)
 assert (sq.get_width(), sq.get_height()) == (64, 64)
 print("thumbnails ok")

@@ -25,7 +25,9 @@ some touch screens (the b8k tablet's filter) do not pass.
 import hashlib
 import os
 import queue
+import shutil
 import subprocess
+import tempfile
 import threading
 
 import gi
@@ -43,6 +45,10 @@ FAIL = "b8k-compat-1"
 SAFE = ["-protocol_whitelist", "file", "-format_whitelist",
         "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,asf,flv,mp3,ogg,flac,wav,aac,amr"]
 SLIDE_S = 4
+# Pictures come from anywhere (chats, cards): one too large to decode in a
+# tablet's memory is left alone rather than decoded.
+MAX_PIXELS = 60 * 1000 * 1000
+MAX_COVER = 8 * 1024 * 1024  # bytes of an embedded cover
 
 
 def kind_of(name):
@@ -118,13 +124,14 @@ def cover_bytes(path):
 
 
 def pixbuf_of(path, size):
-    _fmt, w, h = GdkPixbuf.Pixbuf.get_file_info(path)
-    if w and h:
-        k = size / float(min(w, h))
-        pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, max(1, int(w * k + 0.5)),
-                                                      max(1, int(h * k + 0.5)), True)
-    else:
-        pix = GdkPixbuf.Pixbuf.new_from_file(path)
+    """Raises GLib.Error when the file cannot be read, ValueError when it is
+    larger than MAX_PIXELS or its size cannot be told."""
+    _fmt, w, h = GdkPixbuf.Pixbuf.get_file_info(path)  # -1 when it cannot tell
+    if w <= 0 or h <= 0 or w * h > MAX_PIXELS:
+        raise ValueError("picture too large or of unknown size: %s" % path)
+    k = size / float(min(w, h))
+    pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, max(1, int(w * k + 0.5)),
+                                                  max(1, int(h * k + 0.5)), True)
     return pix.apply_embedded_orientation() or pix
 
 
@@ -194,8 +201,8 @@ def _make(path):
         return _fit(pixbuf_of(path, SIZE), SIZE)
     if kind == "video":
         dur = media_info(path, "video").get("duration")
-        frame = os.path.join(GLib.get_tmp_dir(), "b8k-compat-%d-%d.png"
-                             % (os.getpid(), threading.get_ident()))
+        work = tempfile.mkdtemp(prefix="b8k-compat-")  # 0700, a name no one guesses
+        frame = os.path.join(work, "frame.png")
         try:
             for at in (min(3.0, dur / 3.0) if dur else 1.0, 0.0):
                 subprocess.run(
@@ -206,16 +213,21 @@ def _make(path):
                 if os.path.exists(frame) and os.path.getsize(frame) > 0:
                     return GdkPixbuf.Pixbuf.new_from_file(frame)
         finally:
-            try:
-                os.unlink(frame)
-            except OSError:
-                pass
+            shutil.rmtree(work, ignore_errors=True)
         return None
     if kind == "audio":
         data = cover_bytes(path)
-        if not data:
+        if not data or len(data) > MAX_COVER:
             return None
         loader = GdkPixbuf.PixbufLoader()
+
+        def prepared(ld, w, h):
+            if w * h > MAX_PIXELS:
+                raise ValueError("cover too large")
+            k = min(1.0, SIZE / float(max(w, h, 1)))
+            ld.set_size(max(1, int(w * k)), max(1, int(h * k)))  # scaled as it decodes
+
+        loader.connect("size-prepared", prepared)
         loader.write(data)
         loader.close()
         pix = loader.get_pixbuf()
@@ -381,7 +393,7 @@ class Viewer(Gtk.Overlay):
         def work():
             try:
                 pix = pixbuf_of(path, side)
-            except GLib.Error:
+            except (GLib.Error, ValueError):
                 pix = None
             GLib.idle_add(lambda: (self._loaded(token, pix), False)[1])
 
