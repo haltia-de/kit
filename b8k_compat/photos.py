@@ -53,12 +53,14 @@ SLIDE_S = 4
 
 
 def _uncap():
-    """In ffmpeg's and ffprobe's child: the reader's memory cap lifted (it is
-    a soft limit); they run under a time limit."""
+    """In ffmpeg's and ffprobe's child: the address space up to the reader's
+    hard ceiling (worker.CEILING), and a minute of processor time."""
     try:
         import resource
 
-        resource.setrlimit(resource.RLIMIT_AS, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS, (hard, hard))
+        resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
     except (ImportError, ValueError, OSError):
         pass
 # Pictures come from anywhere (chats, cards): one too large to decode in a

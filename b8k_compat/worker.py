@@ -21,7 +21,8 @@ import subprocess
 import sys
 import threading
 
-MEMORY = 400 * 1024 * 1024  # bytes of address space for the reader
+MEMORY = 400 * 1024 * 1024  # bytes of address space for the reader's own parsing
+CEILING = 1536 * 1024 * 1024  # the hard limit, for ffmpeg and ffprobe too
 TIMEOUT_S = 60
 
 
@@ -89,9 +90,10 @@ def serve():
     try:
         import resource
 
-        # The soft limit only: ffmpeg and ffprobe, which need more address
-        # space and run under a time limit instead, lift it (photos.UNCAP).
-        resource.setrlimit(resource.RLIMIT_AS, (MEMORY, resource.RLIM_INFINITY))
+        # A hard ceiling nothing here can lift, and a lower soft limit for
+        # the reader's own parsing; ffmpeg and ffprobe, which need more
+        # address space, raise the soft one to the ceiling (photos._uncap).
+        resource.setrlimit(resource.RLIMIT_AS, (MEMORY, CEILING))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ImportError, ValueError, OSError):
         pass
