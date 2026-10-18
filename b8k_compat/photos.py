@@ -221,15 +221,23 @@ def _make(path):
             return None
         loader = GdkPixbuf.PixbufLoader()
 
+        too_big = []
+
         def prepared(ld, w, h):
+            # An exception here would only be printed, the decoding going on:
+            # a refusal is kept and the picture shrunk to a pixel instead.
             if w * h > MAX_PIXELS:
-                raise ValueError("cover too large")
+                too_big.append(True)
+                ld.set_size(1, 1)
+                return
             k = min(1.0, SIZE / float(max(w, h, 1)))
             ld.set_size(max(1, int(w * k)), max(1, int(h * k)))  # scaled as it decodes
 
         loader.connect("size-prepared", prepared)
         loader.write(data)
         loader.close()
+        if too_big:
+            return None
         pix = loader.get_pixbuf()
         return _fit(pix, SIZE) if pix is not None else None
     return None
