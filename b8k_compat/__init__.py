@@ -10,9 +10,10 @@
               at a time)
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
     testing   FakePlayer, FakeInhibit for programs' own tests
+    worker    the reader process the photos module parses files in
 
 It knows nothing of any shell: a desktop (GNOME, KDE, the b8k tablet shell)
 gives the look through its GTK theme and meets the program through the
 freedesktop standards (.desktop files, logind, Unity LauncherEntry).
 """
-__version__ = "1.0.2"
+__version__ = "1.1"

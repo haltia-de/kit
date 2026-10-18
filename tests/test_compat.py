@@ -161,6 +161,35 @@ try:
 except ValueError:
     pass
 assert photos.thumbnail(huge) is None
+# the reader process: a file it dies or hangs on is given up on for good
+assert photos.media_info(song, "audio") == {"duration": None}  # parsed there, no tags
+real = photos._reader[:]
+
+
+class DeadReader:
+    calls = 0
+
+    def call(self, _req):
+        DeadReader.calls += 1
+        return None
+
+
+photos._reader[:] = [DeadReader()]
+bomb = os.path.join(top, "bomb.jpg")
+with open(bomb, "wb") as fh:
+    fh.write(b"\xff\xd8 pretend this kills the parser")
+assert photos.thumbnail(bomb) is None and DeadReader.calls == 1
+assert photos.thumbnail(bomb) is None and DeadReader.calls == 1  # not tried again
+assert photos.media_info(bomb.replace(".jpg", ".mp4")) == {"duration": None}
+photos._reader[:] = real
+from b8k_compat.worker import Worker  # noqa: E402
+
+w = Worker(timeout=5)
+assert w.call({"op": "nonsense"}) == {"error": "unknown op"}
+w.proc.kill()
+w.proc.wait()
+assert w.call({"op": "info", "path": song, "kind": "audio"}) == {"info": {"duration": None}}
+w.close()
 sq = photos.square(tp, 64)
 assert (sq.get_width(), sq.get_height()) == (64, 64)
 print("thumbnails ok")

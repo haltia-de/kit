@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: GPL-2.0
+"""The file reader in a process of its own: what parses files that came
+from anywhere (pictures through GdkPixbuf, tags and covers through
+mutagen, video through ffmpeg) runs here, with its memory capped, so a
+file made to exhaust or crash a parser costs a restart of this process,
+not the program.
+
+    python3 -m b8k_compat.worker    reads one JSON request per line on
+                                    stdin, answers one JSON line on stdout:
+        {"op": "thumb", "path": p}            -> {"thumb": path or null}
+        {"op": "info", "path": p, "kind": k}  -> {"info": {...}}
+
+The program side is Worker: call(request) -> the answer, or None when the
+reader died, broke the protocol or took longer than TIMEOUT_S (it is
+killed and started again for the next request). One request at a time.
+"""
+import json
+import os
+import select
+import subprocess
+import sys
+import threading
+
+MEMORY = 400 * 1024 * 1024  # bytes of address space for the reader
+TIMEOUT_S = 60
+
+
+class Worker:
+    def __init__(self, timeout=TIMEOUT_S):
+        self.timeout = timeout
+        self.proc = None
+        self.lock = threading.Lock()
+
+    def _start(self):
+        env = dict(os.environ)
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = here + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH")
+                                    else "")
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "b8k_compat.worker"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=env, cwd="/", close_fds=True, text=True, bufsize=1)
+
+    def _kill(self):
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self.proc = None
+
+    def call(self, request):
+        with self.lock:
+            for _attempt in range(2):  # a reader that died meanwhile: once more
+                if self.proc is None or self.proc.poll() is not None:
+                    self._kill()
+                    try:
+                        self._start()
+                    except OSError:
+                        return None
+                try:
+                    self.proc.stdin.write(json.dumps(request) + "\n")
+                    self.proc.stdin.flush()
+                except (OSError, ValueError):
+                    self._kill()
+                    continue
+                ready, _w, _x = select.select([self.proc.stdout], [], [], self.timeout)
+                if not ready:
+                    self._kill()  # stuck on this file: not tried again
+                    return None
+                line = self.proc.stdout.readline()
+                if not line:
+                    self._kill()
+                    return None  # died on this file
+                try:
+                    return json.loads(line)
+                except ValueError:
+                    self._kill()
+                    return None
+            return None
+
+    def close(self):
+        with self.lock:
+            self._kill()
+
+
+def serve():
+    try:
+        import resource
+
+        # The soft limit only: ffmpeg and ffprobe, which need more address
+        # space and run under a time limit instead, lift it (photos.UNCAP).
+        resource.setrlimit(resource.RLIMIT_AS, (MEMORY, resource.RLIM_INFINITY))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    from b8k_compat import photos
+
+    for line in sys.stdin:
+        try:
+            req = json.loads(line)
+            if req.get("op") == "thumb":
+                answer = {"thumb": photos.make_thumbnail(req["path"])}
+            elif req.get("op") == "info":
+                answer = {"info": photos.read_info(req["path"], req.get("kind"))}
+            else:
+                answer = {"error": "unknown op"}
+        except MemoryError:
+            answer = {"error": "memory"}
+        except Exception as exc:  # one bad file: an answer, the reader goes on
+            answer = {"error": type(exc).__name__}
+        sys.stdout.write(json.dumps(answer) + "\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    serve()

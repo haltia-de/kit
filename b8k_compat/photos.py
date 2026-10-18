@@ -6,6 +6,11 @@
     thumbnail(path)        its freedesktop thumbnail (~/.cache/thumbnails/
                            large, 256 px, shared with file managers), made
                            if missing or stale; None when it has none
+
+media_info and thumbnail parse the file in the reader process (worker.py,
+memory capped): a file made to exhaust or crash a parser is given up on
+(and remembered as failed), the program goes on. Both block: call them
+from a thread.
     pixbuf_of(path, size)  a picture file at about size px on its short
                            side, turned upright
     square(pix, size)      the middle square of a pixbuf, scaled
@@ -45,6 +50,17 @@ FAIL = "b8k-compat-1"
 SAFE = ["-protocol_whitelist", "file", "-format_whitelist",
         "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,asf,flv,mp3,ogg,flac,wav,aac,amr"]
 SLIDE_S = 4
+
+
+def _uncap():
+    """In ffmpeg's and ffprobe's child: the reader's memory cap lifted (it is
+    a soft limit); they run under a time limit."""
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_AS, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    except (ImportError, ValueError, OSError):
+        pass
 # Pictures come from anywhere (chats, cards): one too large to decode in a
 # tablet's memory is left alone rather than decoded.
 MAX_PIXELS = 60 * 1000 * 1000
@@ -62,7 +78,28 @@ def kind_of(name):
     return None
 
 
+_reader = []
+
+
+def _worker():
+    if not _reader:
+        from .worker import Worker
+
+        _reader.append(Worker())
+    return _reader[0]
+
+
 def media_info(path, kind=None):
+    kind = kind or kind_of(path)
+    if kind not in ("video", "audio"):
+        return {"duration": None}
+    answer = _worker().call({"op": "info", "path": path, "kind": kind}) or {}
+    info = answer.get("info")
+    return info if isinstance(info, dict) else {"duration": None}
+
+
+def read_info(path, kind=None):
+    """media_info's work, in the reader process."""
     kind = kind or kind_of(path)
     info = {"duration": None}
     if kind == "audio":
@@ -85,7 +122,8 @@ def media_info(path, kind=None):
             out = subprocess.run(
                 ["ffprobe", "-v", "error"] + SAFE +
                 ["-show_entries", "format=duration", "-of", "default=nw=1:nk=1",
-                 "file:" + path], capture_output=True, text=True, timeout=20)
+                 "file:" + path], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=20, preexec_fn=_uncap)
             info["duration"] = float(out.stdout.strip())
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
@@ -155,27 +193,65 @@ def _cache():
     return os.path.join(GLib.get_user_cache_dir(), "thumbnails")
 
 
-def thumbnail(path):
-    """The freedesktop thumbnail of a file, made if missing or stale."""
+def _names(path):
+    """(uri, mtime, thumbnail path, failure path), or None for no file."""
     try:
         mtime = int(os.stat(path).st_mtime)
     except OSError:
         return None
     uri = Gio.File.new_for_path(os.path.abspath(path)).get_uri()
     name = hashlib.md5(uri.encode()).hexdigest() + ".png"
-    out = os.path.join(_cache(), "large", name)
-    fail = os.path.join(_cache(), "fail", FAIL, name)
+    return (uri, mtime, os.path.join(_cache(), "large", name),
+            os.path.join(_cache(), "fail", FAIL, name))
+
+
+def _known(names):
+    """The thumbnail path, "" for a remembered failure, None if not made."""
+    _uri, mtime, out, fail = names
     for done, good in ((out, True), (fail, False)):
         try:
             _f, w, _h = GdkPixbuf.Pixbuf.get_file_info(done)
             if w and str(mtime) == _option(done, "tEXt::Thumb::MTime"):
-                return done if good else None
+                return done if good else ""
         except (GLib.Error, TypeError):
             pass
+    return None
+
+
+def thumbnail(path):
+    """The freedesktop thumbnail of a file, made (in the reader process) if
+    missing or stale; None when it has none."""
+    names = _names(path)
+    if names is None:
+        return None
+    known = _known(names)
+    if known is not None:
+        return known or None
+    answer = _worker().call({"op": "thumb", "path": path})
+    if answer is None:  # the reader died or hung on this file: never again
+        _save(names, None)
+        return None
+    made = answer.get("thumb")
+    return made if isinstance(made, str) and made == names[2] else None
+
+
+def make_thumbnail(path):
+    """thumbnail's work, in the reader process."""
+    names = _names(path)
+    if names is None:
+        return None
+    known = _known(names)
+    if known is not None:
+        return known or None
     try:
         pix = _make(path)
     except Exception:
         pix = None
+    return _save(names, pix)
+
+
+def _save(names, pix):
+    uri, mtime, out, fail = names
     target = out if pix is not None else fail
     if pix is None:
         pix = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, 1, 1)
@@ -200,16 +276,17 @@ def _make(path):
     if kind == "photo":
         return _fit(pixbuf_of(path, SIZE), SIZE)
     if kind == "video":
-        dur = media_info(path, "video").get("duration")
+        dur = read_info(path, "video").get("duration")
         work = tempfile.mkdtemp(prefix="b8k-compat-")  # 0700, a name no one guesses
         frame = os.path.join(work, "frame.png")
         try:
             for at in (min(3.0, dur / 3.0) if dur else 1.0, 0.0):
                 subprocess.run(
-                    ["ffmpeg", "-v", "error", "-y"] + SAFE +
+                    ["ffmpeg", "-nostdin", "-v", "error", "-y"] + SAFE +
                     ["-ss", "%.2f" % at, "-i", "file:" + path, "-frames:v", "1", "-vf",
                      "scale=%d:%d:force_original_aspect_ratio=decrease" % (SIZE, SIZE), frame],
-                    capture_output=True, timeout=60)
+                    stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+                    preexec_fn=_uncap)
                 if os.path.exists(frame) and os.path.getsize(frame) > 0:
                     return GdkPixbuf.Pixbuf.new_from_file(frame)
         finally:
