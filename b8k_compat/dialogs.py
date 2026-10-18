@@ -14,7 +14,12 @@ or tap does no harm. Dialog widgets carry the CSS class "b8k-dialog";
 choices are buttons of class "b8k-choice", the current one also
 "current".
 """
-from gi.repository import Gtk
+import gi
+
+# GTK 4 is often installed too: without this gi may load it.
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk  # noqa: E402
 
 CANCEL = "Отмена"
 
