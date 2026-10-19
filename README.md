@@ -14,7 +14,7 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 |---|---|
 | `haltia_kit.settings` | `Settings(name)`: `~/.config/haltia/<name>.conf`, раздел `[name]`, да/нет как `yes`/`no` |
 | `haltia_kit.dialogs` | `ask`, `choose`, `text`, `info`: вопросы внутри окна (GTK), «Отмена» по умолчанию |
-| `haltia_kit.awake` | `Awake`: не засыпать, пока что-то играет (logind inhibit) |
+| `haltia_kit.awake` | `Awake`: не засыпать, пока что-то играет — через `Gtk.Application.inhibit` (портал в Flatpak, менеджер сеанса на рабочем столе), иначе logind |
 | `haltia_kit.sound` | `Player`: звук через libmpv, без плейлистов и youtube-dl, не засыпает, пока играет |
 | `haltia_kit.photos` | `kind_of`, `media_info`, `thumbnail` (миниатюры freedesktop в `~/.cache/thumbnails`, общие с файловыми менеджерами), `Thumbs`, `Viewer` (фото по одному: ‹ › и смахивание, + −, слайд-шоу) |
 | `haltia_kit.formats` | `plural`, `nice_size`, `nice_duration`, `nice_date`, `month` |

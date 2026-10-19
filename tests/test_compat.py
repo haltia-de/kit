@@ -77,6 +77,35 @@ def broken(*_a):
 
 
 assert Awake("x", "y", inhibit=broken).hold() is False  # without logind: nothing
+
+
+class FakeApp:
+    """Gtk.Application's inhibit: a cookie, or 0 when nobody answers."""
+    def __init__(self, answer):
+        self.answer, self.cookies = answer, set()
+
+    def inhibit(self, window, flags, reason):
+        if not self.answer:
+            return 0
+        self.cookies.add(len(self.cookies) + 1)
+        return len(self.cookies)
+
+    def uninhibit(self, cookie):
+        self.cookies.discard(cookie)
+
+
+# The standard way first: the application's inhibit (portal, session manager).
+app = FakeApp(True)
+inh = testing.FakeInhibit()
+a = Awake("Музыка", "plays", inhibit=inh, app=app)
+assert a.hold() and a.hold() and len(app.cookies) == 1 and inh.held == 0 and a.held
+a.release()
+assert not app.cookies and not a.held
+# Nobody answers it (the tablet): logind.
+a = Awake("Музыка", "plays", inhibit=inh, app=FakeApp(False))
+assert a.hold() and inh.held == 1
+a.release()
+assert inh.held == 0 and not a.held
 print("awake ok")
 
 # --- the player: awake only while playing and not paused (no libmpv: fake mpv) ---------
