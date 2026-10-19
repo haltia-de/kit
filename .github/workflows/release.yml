@@ -12,3 +12,6 @@ jobs:
     with:
       arch: noarch
     secrets: inherit
+  deb:
+    needs: apk
+    uses: haltia-de/ci/.github/workflows/deb.yml@v1

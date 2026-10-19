@@ -1,3 +1,9 @@
+haltia-kit (2.1.1) unstable; urgency=medium
+
+  * The release carries python3-haltia-kit for Debian and Ubuntu.
+
+ -- Haltia <rensomail@gmail.com>  Mon, 19 Oct 2026 21:30:00 +0300
+
 haltia-kit (2.1.0) unstable; urgency=medium
 
   * Packages for Debian and a Flatpak module.
