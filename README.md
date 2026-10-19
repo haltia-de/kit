@@ -28,8 +28,19 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 файл, который роняет или подвешивает разборщик, бросается и запоминается,
 программа не страдает. ffmpeg читает только сам файл: без сети и плейлистов.
 
-Установка: `sh install.sh [ROOT]` (в системный site-packages), `pip install .`
-или пакет Alpine из `packaging/alpine/APKBUILD`. Проверка:
+Установка:
+- Ubuntu 24.04 и Debian 13 — пакет `python3-haltia-kit` из
+  [репозитория apt Haltia](https://haltia-de.github.io/packages/) (его
+  ставят программы как зависимость);
+- Alpine и postmarketOS — `py3-haltia-kit` из репозитория apk Haltia;
+- Flatpak — модуль `packaging/flatpak/haltia-kit.yml` в манифесте
+  программы (kit по тегу, python-mpv, mutagen; libmpv и ffmpeg программа
+  добавляет сама, если нужен звук);
+- из исходников — `sh install.sh [ROOT]` (в системный site-packages) или
+  `pip install .`.
+
+Пути — только через каталоги XDG из GLib: в Flatpak `~` закрыт, а
+настройки и данные лежат в `~/.var/app/<id>/`. Проверка:
 `python3 tests/test_compat.py` (без экрана, libmpv и звуковой карты).
 
 Решение о разделении на устройство, оболочку и программы:
