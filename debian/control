@@ -1,0 +1,19 @@
+Source: haltia-kit
+Section: python
+Priority: optional
+Maintainer: Haltia <rensomail@gmail.com>
+Build-Depends: debhelper-compat (= 13), dh-sequence-python3, pybuild-plugin-pyproject,
+ python3-all, python3-setuptools
+Standards-Version: 4.7.0
+Homepage: https://github.com/haltia-de/kit
+Rules-Requires-Root: no
+
+Package: python3-haltia-kit
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}, python3-gi, gir1.2-gtk-3.0,
+ python3-mpv, python3-mutagen
+Recommends: ffmpeg
+Description: what the Haltia programs share (GTK 3)
+ haltia_kit holds what the programs of Haltia, a calm touch desktop, have
+ in common: large questions, settings, keeping the machine awake while
+ something plays, sound through libmpv, photo thumbnails and a viewer.

@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: haltia-kit
+Source: https://github.com/haltia-de/kit
+
+Files: *
+Copyright: 2026 Mikhail Nevskiy
+License: GPL-2
+ On Debian systems the full text is in /usr/share/common-licenses/GPL-2.

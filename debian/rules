@@ -1,0 +1,7 @@
+#!/usr/bin/make -f
+export PYBUILD_NAME=haltia-kit
+%:
+	dh $@ --buildsystem=pybuild
+
+# The tests need a display and libmpv; they run in the repository's CI.
+override_dh_auto_test:

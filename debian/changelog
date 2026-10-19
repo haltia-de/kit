@@ -1,0 +1,5 @@
+haltia-kit (2.1.0) unstable; urgency=medium
+
+  * Packages for Debian and a Flatpak module.
+
+ -- Haltia <rensomail@gmail.com>  Mon, 19 Oct 2026 19:45:00 +0300
