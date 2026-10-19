@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
-"""A program's settings: one ini file, ~/.config/b8k/<name>.conf (under
+"""A program's settings: one ini file, ~/.config/haltia/<name>.conf (under
 $XDG_CONFIG_HOME), section [name]. Yes/no are written as yes and no, as
-the b8k programs always have; a value that cannot be read gives the
+the Haltia programs always have; a value that cannot be read gives the
 default. Every set() writes the file at once, through a temporary file.
 
     s = Settings("music")
@@ -15,11 +15,25 @@ import os
 from gi.repository import GLib
 
 
+def _move_old(old, new):
+    """Until 3.0: the file from before the rename (~/.config/b8k) moves to
+    the new place the first time, unless the new one is already there."""
+    try:
+        if os.path.exists(old) and not os.path.exists(new):
+            os.makedirs(os.path.dirname(new), exist_ok=True)
+            os.replace(old, new)
+    except OSError:
+        pass
+
+
 class Settings:
     def __init__(self, name, folder=None):
         self.name = name
-        base = folder or os.path.join(GLib.get_user_config_dir(), "b8k")
+        base = folder or os.path.join(GLib.get_user_config_dir(), "haltia")
         self.path = os.path.join(base, name + ".conf")
+        if folder is None:
+            _move_old(os.path.join(GLib.get_user_config_dir(), "b8k", name + ".conf"),
+                      self.path)
 
     def _read(self):
         conf = configparser.ConfigParser(interpolation=None)

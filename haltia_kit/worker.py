@@ -5,7 +5,7 @@ mutagen, video through ffmpeg) runs here, with its memory capped, so a
 file made to exhaust or crash a parser costs a restart of this process,
 not the program.
 
-    python3 -m b8k_compat.worker    reads one JSON request per line on
+    python3 -m haltia_kit.worker    reads one JSON request per line on
                                     stdin, answers one JSON line on stdout:
         {"op": "thumb", "path": p}            -> {"thumb": path or null}
         {"op": "info", "path": p, "kind": k}  -> {"info": {...}}
@@ -38,7 +38,7 @@ class Worker:
         env["PYTHONPATH"] = here + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH")
                                     else "")
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "b8k_compat.worker"],
+            [sys.executable, "-m", "haltia_kit.worker"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=env, cwd="/", close_fds=True, text=True, bufsize=1)
 
@@ -97,7 +97,7 @@ def serve():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ImportError, ValueError, OSError):
         pass
-    from b8k_compat import photos
+    from haltia_kit import photos
 
     for line in sys.stdin:
         try:

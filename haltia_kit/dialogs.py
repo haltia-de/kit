@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 """Questions inside the program's window, as GTK dialogs: they open at
-once and take the desktop's look (the b8k shell's GTK theme makes them
+once and take the desktop's look (the Haltia shell's GTK theme makes them
 large). Each waits for the answer (a nested main loop) and returns it.
 
     ask(parent, "Удалить «кот.png»?", "Удалить")  -> True / False
@@ -10,9 +10,10 @@ large). Each waits for the answer (a nested main loop) and returns it.
     info(parent, "Не удалось удалить.")
 
 Отмена is always there and is what Enter or Escape gives, so a stray key
-or tap does no harm. Dialog widgets carry the CSS class "b8k-dialog";
-choices are buttons of class "b8k-choice", the current one also
-"current".
+or tap does no harm. Dialog widgets carry the CSS class "haltia-dialog",
+the title "haltia-title"; choices are buttons of class "haltia-choice",
+the current one also "current". Until 3.0 each also carries the old b8k-
+class, which the shell's theme before 2.0 styles.
 """
 import gi
 
@@ -24,15 +25,21 @@ from gi.repository import Gtk  # noqa: E402
 CANCEL = "Отмена"
 
 
+
+def _classes(widget, name):
+    ctx = widget.get_style_context()
+    ctx.add_class("haltia-" + name)
+    ctx.add_class("b8k-" + name)  # the shell's theme before 2.0
+
 def _dialog(parent, title):
     dialog = Gtk.Dialog(transient_for=parent, modal=True, destroy_with_parent=True)
-    dialog.get_style_context().add_class("b8k-dialog")
+    _classes(dialog, "dialog")
     # The question is the label below, large; a title bar would repeat it.
     box = dialog.get_content_area()
     box.set_spacing(12)
     box.set_border_width(16)
     head = Gtk.Label(label=title, wrap=True, max_width_chars=40)
-    head.get_style_context().add_class("b8k-title")
+    _classes(head, "title")
     box.pack_start(head, False, False, 0)
     return dialog, box
 
@@ -55,6 +62,7 @@ def choose(parent, title, items, current=None):
     for i, item in enumerate(items):
         btn = Gtk.Button(label=item)
         ctx = btn.get_style_context()
+        ctx.add_class("haltia-choice")
         ctx.add_class("b8k-choice")
         if i == current:
             ctx.add_class("current")

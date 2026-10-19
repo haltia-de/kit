@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "b8k-compat"
-version = "1.2.2"
-description = "What the b8k programs share: questions, settings, sound, photos (GTK 3)"
+name = "haltia-kit"
+version = "2.0.0"
+description = "What the Haltia programs share: questions, settings, sound, photos (GTK 3)"
 readme = "README.md"
 license = { text = "GPL-2.0-only" }
 requires-python = ">=3.9"
@@ -16,7 +16,7 @@ sound = ["python-mpv"]
 media = ["mutagen"]
 
 [project.urls]
-Homepage = "https://github.com/trudenboy/b8k-compat"
+Homepage = "https://github.com/haltia-de/kit"
 
 [tool.setuptools]
-packages = ["b8k_compat"]
+packages = ["haltia_kit", "b8k_compat"]

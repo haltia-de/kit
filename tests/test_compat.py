@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""b8k-compat through its interface: settings, awake, the fake player,
+"""haltia-kit through its interface: settings, awake, the fake player,
 the player's awake rule, kinds, thumbnails, formats.
 Run: python3 tests/test_compat.py (PyGObject with GdkPixbuf; no display,
 no libmpv, no sound card needed)."""
@@ -19,14 +19,38 @@ import gi  # noqa: E402
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf  # noqa: E402
 
-from b8k_compat import formats, photos, settings, sound, testing  # noqa: E402
-from b8k_compat.awake import Awake  # noqa: E402
+from haltia_kit import formats, photos, settings, sound, testing  # noqa: E402
+from haltia_kit.awake import Awake  # noqa: E402
+
+# --- settings: a file from before the rename moves to ~/.config/haltia ----------------
+os.makedirs(os.path.join(top, "config", "b8k"))
+with open(os.path.join(top, "config", "b8k", "news.conf"), "w") as fh:
+    fh.write("[news]\nbuzz = no\n")
+n = settings.Settings("news")
+assert n.path == os.path.join(top, "config", "haltia", "news.conf")
+assert n.get_bool("buzz", True) is False
+assert not os.path.exists(os.path.join(top, "config", "b8k", "news.conf"))
+print("settings moved ok")
+
+# --- the old module name and the folder migration --------------------------------------
+import b8k_compat.settings as old_settings  # noqa: E402
+from b8k_compat import formats as old_formats  # noqa: E402
+from haltia_kit import paths  # noqa: E402
+assert old_settings is settings and old_formats is formats
+os.makedirs(os.path.join(top, "data", "b8k-max", "photos"))
+moved = paths.migrate_dirs("b8k-max", "haltia-max", bases=[os.path.join(top, "data")])
+assert moved == [os.path.join(top, "data", "haltia-max")]
+assert os.path.isdir(os.path.join(top, "data", "haltia-max", "photos"))
+assert os.path.islink(os.path.join(top, "data", "b8k-max"))
+assert os.path.isdir(os.path.join(top, "data", "b8k-max", "photos"))
+assert paths.migrate_dirs("b8k-max", "haltia-max", bases=[os.path.join(top, "data")]) == []
+print("old name and folders ok")
 
 # --- settings: the old yes/no files read as they are ----------------------------------
 s = settings.Settings("max")
-assert s.path == os.path.join(top, "config", "b8k", "max.conf")
+assert s.path == os.path.join(top, "config", "haltia", "max.conf")
 assert s.get_bool("telemetry", True) is True and s.get("folder", "x") == "x"
-os.makedirs(os.path.dirname(s.path))
+os.makedirs(os.path.dirname(s.path), exist_ok=True)
 with open(s.path, "w") as fh:
     fh.write("[max]\ntelemetry = no\nbuzz = yes\nfolder = /home/user/Загрузки/MAX\nodd = maybe\n")
 assert s.get_bool("telemetry", True) is False and s.get_bool("buzz", False) is True
@@ -184,7 +208,7 @@ assert photos.thumbnail(bomb) is None and DeadReader.calls == 1
 assert photos.thumbnail(bomb) is None and DeadReader.calls == 1  # not tried again
 assert photos.media_info(bomb.replace(".jpg", ".mp4")) == {"duration": None}
 photos._reader[:] = real
-from b8k_compat.worker import Worker  # noqa: E402
+from haltia_kit.worker import Worker  # noqa: E402
 
 w = Worker(timeout=5)
 assert w.call({"op": "nonsense"}) == {"error": "unknown op"}

@@ -17,7 +17,7 @@ options are further mpv options a program needs (a CDN that wants a
 browser's user agent: {"user_agent": ...}); they cannot undo those.
 Raises RuntimeError from play() when libmpv cannot be loaded.
 
-tests: b8k_compat.testing.FakePlayer has the same interface.
+tests: haltia_kit.testing.FakePlayer has the same interface.
 """
 from gi.repository import GLib
 

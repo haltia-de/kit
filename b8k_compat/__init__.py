@@ -1,19 +1,37 @@
 # SPDX-License-Identifier: GPL-2.0
-"""b8k-compat: what the b8k programs share, for GTK 3 on any Linux desktop.
+"""b8k_compat is haltia_kit under its name before ADR 0004, until 3.0:
+`import b8k_compat.settings` and `from b8k_compat import dialogs` give the
+haltia_kit modules themselves, loaded only when asked for (sound would
+load libmpv)."""
+import importlib
+import importlib.abc
+import importlib.util
+import sys
 
-    settings  Settings(name): ~/.config/b8k/<name>.conf, section [name]
-    dialogs   ask, choose, text, info: questions inside the window
-    awake     Awake(who, why): keep the machine from sleeping (logind)
-    sound     Player: sound through libmpv, awake while it plays
-    photos    kind_of, thumbnail (freedesktop thumbnails), pixbuf_of, square,
-              Thumbs (small pictures loaded in a thread), Viewer (photos one
-              at a time)
-    formats   plural, nice_size, nice_duration, nice_date, month (Russian)
-    testing   FakePlayer, FakeInhibit for programs' own tests
-    worker    the reader process the photos module parses files in
+import haltia_kit
 
-It knows nothing of any shell: a desktop (GNOME, KDE, the b8k tablet shell)
-gives the look through its GTK theme and meets the program through the
-freedesktop standards (.desktop files, logind, Unity LauncherEntry).
-"""
-__version__ = "1.2.2"
+__version__ = haltia_kit.__version__
+__path__ = []  # a package, so b8k_compat.<module> is looked up below
+
+
+class _Alias(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, fullname, path, target=None):
+        if fullname.startswith(__name__ + "."):
+            return importlib.util.spec_from_loader(fullname, self)
+        return None
+
+    def create_module(self, spec):
+        return importlib.import_module("haltia_kit." + spec.name.split(".", 1)[1])
+
+    def exec_module(self, module):
+        pass
+
+
+sys.meta_path.insert(0, _Alias())
+
+
+def __getattr__(name):
+    try:
+        return importlib.import_module("haltia_kit." + name)
+    except ImportError:
+        raise AttributeError(name) from None

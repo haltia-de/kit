@@ -25,7 +25,7 @@ network, no playlists reaching other files).
 
 Taps only in the viewer: ‹ › and a swipe go through the photos, + − zoom,
 a drag pans, ▶ shows them on by themselves; no pinch or double tap, which
-some touch screens (the b8k tablet's filter) do not pass.
+some touch screens (the Haltia shell's touch filter) do not pass.
 """
 import hashlib
 import os
@@ -46,7 +46,7 @@ PHOTO = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "svg"}
 VIDEO = {"mp4", "m4v", "mkv", "webm", "avi", "mov", "3gp", "mpg", "mpeg", "ts", "wmv", "flv"}
 AUDIO = {"mp3", "m4a", "aac", "ogg", "oga", "opus", "flac", "wav", "wma", "amr"}
 SIZE = 256  # the freedesktop "large" thumbnail
-FAIL = "b8k-compat-1"
+FAIL = "b8k-compat-1"  # the failure marker's name, kept: old markers stay valid
 SAFE = ["-protocol_whitelist", "file", "-format_whitelist",
         "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,asf,flv,mp3,ogg,flac,wav,aac,amr"]
 SLIDE_S = 4
@@ -279,7 +279,7 @@ def _make(path):
         return _fit(pixbuf_of(path, SIZE), SIZE)
     if kind == "video":
         dur = read_info(path, "video").get("duration")
-        work = tempfile.mkdtemp(prefix="b8k-compat-")  # 0700, a name no one guesses
+        work = tempfile.mkdtemp(prefix="haltia-kit-")  # 0700, a name no one guesses
         frame = os.path.join(work, "frame.png")
         try:
             for at in (min(3.0, dur / 3.0) if dur else 1.0, 0.0):
@@ -371,14 +371,14 @@ class Thumbs:
 
 
 VIEWER_CSS = b"""
-.b8k-viewer { background-color: #000000; }
-.b8k-viewer label.b8k-note { color: #ffffff; font-size: 24px; }
-.b8k-vbar { background-color: rgba(0,0,0,0.55); border-radius: 18px; padding: 8px; }
-.b8k-vbar button { background-image: none; background-color: rgba(255,255,255,0.18);
+.haltia-viewer { background-color: #000000; }
+.haltia-viewer label.haltia-note { color: #ffffff; font-size: 24px; }
+.haltia-vbar { background-color: rgba(0,0,0,0.55); border-radius: 18px; padding: 8px; }
+.haltia-vbar button { background-image: none; background-color: rgba(255,255,255,0.18);
   color: #ffffff; border: none; box-shadow: none; border-radius: 14px;
   min-height: 64px; min-width: 76px; font-size: 26px; }
-.b8k-vbar button.on { background-color: #3584e4; }
-.b8k-vbar label { color: #ffffff; font-size: 20px; margin: 0 8px; }
+.haltia-vbar button.on { background-color: #3584e4; }
+.haltia-vbar label { color: #ffffff; font-size: 20px; margin: 0 8px; }
 """
 _css_done = []
 
@@ -403,16 +403,16 @@ class Viewer(Gtk.Overlay):
         _viewer_css()
         self.titled = titled or (lambda _n: None)
         self.held_cb = held or (lambda _p: None)
-        self.get_style_context().add_class("b8k-viewer")
+        self.get_style_context().add_class("haltia-viewer")
         self.area = Gtk.DrawingArea()
         self.area.connect("draw", self._draw)
         self.add(self.area)
         self.note = Gtk.Label(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
-        self.note.get_style_context().add_class("b8k-note")
+        self.note.get_style_context().add_class("haltia-note")
         self.add_overlay(self.note)
         bar = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER, valign=Gtk.Align.END,
                       margin_bottom=16)
-        bar.get_style_context().add_class("b8k-vbar")
+        bar.get_style_context().add_class("haltia-vbar")
         self.btn = {}
         for key, label, act in (("prev", "‹", lambda: self.step(-1)),
                                 ("out", "−", lambda: self.zoom_by(1 / 1.5)),
