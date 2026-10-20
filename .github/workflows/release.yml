@@ -15,3 +15,4 @@ jobs:
   deb:
     needs: apk
     uses: haltia-de/ci/.github/workflows/deb.yml@v1
+    secrets: inherit
