@@ -19,9 +19,10 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 | `haltia_kit.photos` | `kind_of`, `media_info`, `thumbnail` (миниатюры freedesktop в `~/.cache/thumbnails`, общие с файловыми менеджерами), `Thumbs`, `Viewer` (фото по одному: ‹ › и смахивание, + −, слайд-шоу) |
 | `haltia_kit.formats` | `plural`, `nice_size`, `nice_duration`, `nice_date`, `month` |
 | `haltia_kit.paths` | `migrate_dirs(old, new)`: свои каталоги программы под новым именем, один раз, со ссылкой на старом месте |
-| `haltia_kit.testing` | `FakePlayer`, `FakeInhibit` для тестов программ |
+| `haltia_kit.vault` | `Vault(app, folder)`: секреты (токены, cookies) в Secret Service через libsecret — gnome-keyring, KWallet, портал в Flatpak; где его нет, файл 0600 в каталоге программы; закрытая связка ключей — `Locked`, а не файл |
+| `haltia_kit.testing` | `FakePlayer`, `FakeInhibit`, `FakeKeyring` для тестов программ |
 
-Зависимости: Python 3, PyGObject с GTK 3; для звука python-mpv (libmpv),
+Зависимости: Python 3, PyGObject с GTK 3 и libsecret (typelib `Secret-1`); для звука python-mpv (libmpv),
 для подробностей о медиа ffmpeg и mutagen — без них просто меньше
 подробностей. Чужие файлы (картинки, теги, обложки, видео) разбираются в
 отдельном процессе с ограничением памяти и времени (`haltia_kit.worker`):

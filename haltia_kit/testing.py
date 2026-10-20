@@ -8,6 +8,11 @@ called at once, not posted, so a test needs no main loop.
 
 FakeInhibit is an inhibit for Awake: it hands out a real pipe fd per hold
 and counts how many are held now (held).
+
+FakeKeyring is a keyring for Vault: kept is its dict of name: text,
+answers=False plays a machine without a Secret Service, and locked=True
+a keyring whose unlock the person refuses (every call raises Locked)
+until the test sets it back.
 """
 import os
 
@@ -101,3 +106,29 @@ class FakeInhibit:
             except OSError:
                 pass
         return n
+
+
+class FakeKeyring:
+    def __init__(self, answers=True, locked=False):
+        self.on, self.locked = answers, locked
+        self.kept = {}
+
+    def answers(self):
+        return self.on
+
+    def _open(self):
+        if self.locked:
+            from .vault import Locked
+            raise Locked()
+
+    def lookup(self, name):
+        self._open()
+        return self.kept.get(name)
+
+    def store(self, name, text):
+        self._open()
+        self.kept[name] = text
+
+    def clear(self, name):
+        self._open()
+        self.kept.pop(name, None)

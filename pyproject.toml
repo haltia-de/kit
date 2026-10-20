@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haltia-kit"
-version = "2.1.2"
-description = "What the Haltia programs share: questions, settings, sound, photos (GTK 3)"
+version = "2.2.0"
+description = "What the Haltia programs share: questions, settings, sound, photos, secrets (GTK 3)"
 readme = "README.md"
 license = { text = "GPL-2.0-only" }
 requires-python = ">=3.9"

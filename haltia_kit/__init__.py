@@ -9,13 +9,16 @@
               Thumbs (small pictures loaded in a thread), Viewer (photos one
               at a time)
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
-    testing   FakePlayer, FakeInhibit for programs' own tests
+    testing   FakePlayer, FakeInhibit, FakeKeyring for programs' own tests
     worker    the reader process the photos module parses files in
     paths     migrate_dirs(old, new): move a program's own folders to its
               new name once
+    vault     Vault(app, folder): secrets in the Secret Service (libsecret),
+              a 0600 file where none answers, Locked when refused
 
 It knows nothing of any shell: a desktop (GNOME, KDE, the Haltia shell)
 gives the look through its GTK theme and meets the program through the
-freedesktop standards (.desktop files, logind, Unity LauncherEntry).
+freedesktop standards (.desktop files, logind, Unity LauncherEntry, the
+Secret Service).
 """
-__version__ = "2.1.2"
+__version__ = "2.2.0"

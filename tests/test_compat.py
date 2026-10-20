@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 """haltia-kit through its interface: settings, awake, the fake player,
-the player's awake rule, kinds, thumbnails, formats.
+the player's awake rule, kinds, thumbnails, the vault, formats.
 Run: python3 tests/test_compat.py (PyGObject with GdkPixbuf; no display,
-no libmpv, no sound card needed)."""
+no libmpv, no sound card, no keyring needed)."""
 import os
 import sys
 import tempfile
@@ -248,6 +248,81 @@ w.close()
 sq = photos.square(tp, 64)
 assert (sq.get_width(), sq.get_height()) == (64, 64)
 print("thumbnails ok")
+
+# --- vault: the keyring when one answers, else a 0600 file; locked is said ----------
+import stat  # noqa: E402
+
+from haltia_kit.vault import FILE, KEYRING, LOCKED, Locked, Vault  # noqa: E402
+
+vdir, vrun = os.path.join(top, "config", "haltia-messenger"), os.path.join(top, "run")
+os.makedirs(vrun, 0o700)
+APP = "io.github.haltia_de.Messenger"
+
+
+def vault(ring, **kw):
+    return Vault(APP, vdir, key="account", keyring=ring, runtime_dir=vrun, **kw)
+
+
+for ring in (None, testing.FakeKeyring(answers=False)):  # the tablet
+    v = vault(ring)
+    v.put("max", "secret")
+    assert v.state == FILE and v.get("max") == "secret"
+    assert stat.S_IMODE(os.stat(os.path.join(vdir, "max")).st_mode) == 0o600
+    assert v.as_file("max") == os.path.join(vdir, "max")
+    v.drop("max")
+    assert v.get("max") is None and v.as_file("max") is None
+
+ring = testing.FakeKeyring()
+v = vault(ring)
+assert v.state is None  # not asked before the first use
+v.put("telegram", "T")
+assert v.state == KEYRING and ring.kept == {"telegram": "T"}
+assert not os.path.exists(os.path.join(vdir, "telegram"))
+v.drop("telegram")
+assert ring.kept == {} and v.get("telegram") is None
+
+ring = testing.FakeKeyring()  # a file of before the keyring moves in once
+with open(os.path.join(vdir, "max.json"), "w") as fh:
+    fh.write("old")
+assert vault(ring, file="%s.json").get("max") == "old" and ring.kept == {"max": "old"}
+assert not os.path.exists(os.path.join(vdir, "max.json"))
+assert vault(ring, file="%s.json").get("max") == "old"
+
+ring = testing.FakeKeyring(locked=True)  # refused: not the file, LOCKED
+with open(os.path.join(vdir, "max"), "w") as fh:
+    fh.write("old")
+v = vault(ring)
+for call in (lambda: v.get("max"), lambda: v.put("max", "new"), lambda: v.take("max"),
+             lambda: v.as_file("max")):
+    try:
+        call()
+        raise AssertionError("a locked keyring gave way")
+    except Locked:
+        assert v.state == LOCKED
+assert os.path.exists(os.path.join(vdir, "max")), "the file waits for the keyring"
+ring.locked = False  # unlocked on the second asking
+assert v.get("max") == "old" and v.state == KEYRING and ring.kept == {"max": "old"}
+assert not os.path.exists(os.path.join(vdir, "max"))
+
+ring = testing.FakeKeyring()  # a copy for yt-dlp and mpv, written back at the end
+ring.kept["c.txt"] = "cookies"
+v = vault(ring)
+path = v.as_file("c.txt")
+assert path.startswith(vrun) and v.as_file("c.txt") == path
+assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
+assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+with open(path, "w") as fh:
+    fh.write("cookies, renewed")
+v.close()
+assert ring.kept["c.txt"] == "cookies, renewed" and not os.path.exists(path)
+path = v.as_file("c.txt")
+v.drop("c.txt")
+assert not os.path.exists(path) and v.as_file("c.txt") is None
+with open(os.path.join(vdir, "c.txt"), "w") as fh:
+    fh.write("new cookies")
+assert v.take("c.txt") and ring.kept["c.txt"] == "new cookies"
+assert not os.path.exists(os.path.join(vdir, "c.txt")) and not v.take("c.txt")
+print("vault ok")
 
 # --- formats -------------------------------------------------------------------------
 assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"

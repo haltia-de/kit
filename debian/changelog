@@ -1,3 +1,11 @@
+haltia-kit (2.2.0) unstable; urgency=medium
+
+  * haltia_kit.vault: a program's secrets in the Secret Service through
+    libsecret, a 0600 file where none answers, and a refused unlock said
+    as such rather than falling back to the file.
+
+ -- Haltia <rensomail@gmail.com>  Tue, 20 Oct 2026 13:40:00 +0300
+
 haltia-kit (2.1.2) unstable; urgency=medium
 
   * Dialogs carry the question as the window title, and under the Haltia
