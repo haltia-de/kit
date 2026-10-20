@@ -1,3 +1,10 @@
+haltia-kit (2.1.2) unstable; urgency=medium
+
+  * Dialogs carry the question as the window title, and under the Haltia
+    shell they have no title bar (it showed the bare app id).
+
+ -- Haltia <rensomail@gmail.com>  Tue, 20 Oct 2026 10:05:25 +0300
+
 haltia-kit (2.1.1) unstable; urgency=medium
 
   * The release carries python3-haltia-kit for Debian and Ubuntu.

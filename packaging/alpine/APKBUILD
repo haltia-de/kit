@@ -1,6 +1,6 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
 pkgname=py3-haltia-kit
-pkgver=2.1.1
+pkgver=2.1.2
 pkgrel=0
 pkgdesc="What the Haltia programs share: questions, settings, sound, photos (GTK 3)"
 url="https://github.com/haltia-de/kit"

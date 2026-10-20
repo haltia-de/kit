@@ -15,6 +15,8 @@ the title "haltia-title"; choices are buttons of class "haltia-choice",
 the current one also "current". Until 3.0 each also carries the old b8k-
 class, which the shell's theme before 2.0 styles.
 """
+import os
+
 import gi
 
 # GTK 4 is often installed too: without this gi may load it.
@@ -24,6 +26,9 @@ from gi.repository import Gtk  # noqa: E402
 
 CANCEL = "Отмена"
 
+# Under the Haltia shell a dialog is a card over its window, with no title
+# bar (which otherwise showed the bare app id, the default window title).
+ON_HALTIA = "Haltia" in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":")
 
 
 def _classes(widget, name):
@@ -35,6 +40,9 @@ def _dialog(parent, title):
     dialog = Gtk.Dialog(transient_for=parent, modal=True, destroy_with_parent=True)
     _classes(dialog, "dialog")
     # The question is the label below, large; a title bar would repeat it.
+    # Other desktops still draw one: it carries the question, not the app id.
+    dialog.set_title(title)
+    dialog.set_decorated(not ON_HALTIA)
     box = dialog.get_content_area()
     box.set_spacing(12)
     box.set_border_width(16)

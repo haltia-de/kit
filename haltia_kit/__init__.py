@@ -18,4 +18,4 @@ It knows nothing of any shell: a desktop (GNOME, KDE, the Haltia shell)
 gives the look through its GTK theme and meets the program through the
 freedesktop standards (.desktop files, logind, Unity LauncherEntry).
 """
-__version__ = "2.1.1"
+__version__ = "2.1.2"
