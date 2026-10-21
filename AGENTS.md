@@ -15,8 +15,8 @@ module name stays as an alias and the packages replace the old one.
 ## Layout
 
 - `haltia_kit/`: the modules (`settings`, `dialogs`, `awake`, `sound`,
-  `photos`, `pictures`, `gallery`, `formats`, `paths`, `vault`, `worker`,
-  `testing`); `README.md`
+  `photos`, `pictures`, `gallery`, `camera`, `formats`, `paths`, `vault`,
+  `worker`, `testing`); `README.md`
   has a table of what each one gives.
 - `b8k_compat/`: the alias for the old module name, until 3.0.
 - `tests/test_compat.py`: the tests.
@@ -33,6 +33,31 @@ module name stays as an alias and the packages replace the old one.
   `pip install .`.
 - Folders only through the GLib XDG functions: in Flatpak `~` is closed and
   settings and data live in `~/.var/app/<id>/`.
+
+## A photo for a program
+
+`haltia_kit.camera.take_photo(parent=None)` returns the path of the photo
+the person kept, or `None` when they cancelled. It runs the Camera app
+(`haltia-de/camera`, desktop id `io.github.haltia_de.Camera`, still to be
+agreed there) as its `Exec` line with `--take-photo`. The contract the app
+keeps:
+
+- with `--take-photo` it runs as its own instance
+  (`Gio.ApplicationFlags.NON_UNIQUE`), never forwarding to an instance
+  already open (that would print nothing and read as a cancel); if the open
+  one holds the camera, the new one shows the busy state;
+- kept: the photo's absolute path as the last line of standard output, then
+  exit 0 (earlier lines are ignored);
+- cancelled: exit 0 without a path.
+
+A non-zero exit (a crash, an older app without `--take-photo`), no app, or
+Flatpak: a dialog with `camera.Viewfinder` in the process.
+`camera.available()` says whether there is a camera at all, so a program
+can hide its camera button; it blocks while it asks the devices (a second
+or more with libcamera) and keeps the answer for 30 seconds. Photos go to
+the XDG pictures folder + `Камера`, as `IMG_YYYYMMDD_HHMMSS.jpg`, unmirrored
+even from a front camera (only the viewfinder mirrors). The tests use
+`videotestsrc` in place of a camera.
 
 ## Release
 

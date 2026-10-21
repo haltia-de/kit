@@ -10,7 +10,9 @@
 # (video frames in haltia_kit.photos) are the program's own modules or the
 # org.freedesktop.Platform.ffmpeg-full extension, when it needs them. The
 # vault needs libsecret, which the GNOME Platform has; it reaches the
-# keyring through the Secret portal, with no --talk-name.
+# keyring through the Secret portal, with no --talk-name. The camera
+# (haltia_kit.camera) uses the Platform's GStreamer and v4l2src and needs
+# --device=all; take_photo() there always opens its own dialog.
 name: haltia-kit
 buildsystem: simple
 build-commands:

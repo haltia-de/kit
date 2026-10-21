@@ -11,6 +11,8 @@
     pictures  pictures decoded with Pillow in the reader process, never
               larger than needed
     gallery   Thumbs and Viewer, the GTK side of photos
+    camera    take_photo(parent), available(), Viewfinder, capture(): the
+              camera through GStreamer (libcamera, else V4L2)
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
     testing   FakePlayer, FakeInhibit, FakeKeyring for programs' own tests
     worker    the reader process the photos module parses files in

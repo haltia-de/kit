@@ -19,12 +19,15 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 | `haltia_kit.photos` | `kind_of`, `media_info`, `thumbnail` (миниатюры freedesktop в `~/.cache/thumbnails`, общие с файловыми менеджерами), `pixbuf_of`, `Thumbs`, `Viewer` (фото по одному: ‹ › и смахивание, + −, слайд-шоу) |
 | `haltia_kit.pictures` | картинки через Pillow в процессе-читателе: не больше нужного размера (JPEG сразу уменьшенным), без увеличения, с запретом слишком больших |
 | `haltia_kit.gallery` | `Thumbs` и `Viewer` (GTK); они же `photos.Thumbs` и `photos.Viewer` |
+| `haltia_kit.camera` | `take_photo(parent)`: фото для любой программы — путь к снимку, который человек оставил, или `None`. Приложение «Камера» запускается с `--take-photo` отдельным экземпляром (`NON_UNIQUE`), печатает абсолютный путь последней строкой и выходит с 0; без пути — отмена; без приложения или при ошибке — диалог в самой программе. `available()` (опрос устройств медленный, ответ помнится 30 с), `Viewfinder` (видоискатель GStreamer: libcamera, иначе V4L2, MJPEG через jpegdec; фронтальная камера зеркальна только в видоискателе), `capture()` (снимок в «Изображения/Камера»); занятая камера — состояние `BUSY`, а не исключение |
 | `haltia_kit.formats` | `plural`, `nice_size`, `nice_duration`, `nice_date`, `month` |
 | `haltia_kit.paths` | `migrate_dirs(old, new)`: свои каталоги программы под новым именем, один раз, со ссылкой на старом месте |
 | `haltia_kit.vault` | `Vault(app, folder)`: секреты (токены, cookies) в Secret Service через libsecret — gnome-keyring, KWallet, портал в Flatpak; где его нет, файл 0600 в каталоге программы; закрытая связка ключей — `Locked`, а не файл |
 | `haltia_kit.testing` | `FakePlayer`, `FakeInhibit`, `FakeKeyring` для тестов программ |
 
-Зависимости: Python 3, PyGObject с GTK 3 и libsecret (typelib `Secret-1`), Pillow для картинок; для звука python-mpv (libmpv),
+Зависимости: Python 3, PyGObject с GTK 3 и libsecret (typelib `Secret-1`), Pillow для картинок; для камеры GStreamer
+с plugins-base и plugins-good (`v4l2src`), на устройствах с libcamera — её
+модуль GStreamer (`libcamerasrc`); для звука python-mpv (libmpv),
 для подробностей о медиа ffmpeg и mutagen — без них просто меньше
 подробностей. Чужие файлы (картинки, теги, обложки, видео) разбираются в
 отдельном процессе с ограничением памяти и времени, без GTK и без экрана
