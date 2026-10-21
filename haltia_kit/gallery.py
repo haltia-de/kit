@@ -16,6 +16,7 @@ Taps only in the viewer: ‹ › and a swipe go through the photos, + − zoom,
 a drag pans, ▶ shows them on by themselves; no pinch or double tap, which
 some touch screens (the Haltia shell's touch filter) do not pass.
 """
+import collections
 import os
 import queue
 import threading
@@ -30,54 +31,111 @@ from . import photos  # noqa: E402
 
 SLIDE_S = 4
 KEPT = 3  # photos kept decoded in the viewer: the one shown and the last ones
+IDLE_S = 30  # seconds the thumbnail thread waits for work before it ends
+MEMO_BYTES = 16 * 1024 * 1024  # small pictures kept, for all the Thumbs together
+
+
+class Memo:
+    """Pixbufs by key, the least recently used let go beyond limit bytes.
+    Used on the GTK side only."""
+
+    def __init__(self, limit=MEMO_BYTES):
+        self.limit, self.used = limit, 0
+        self.kept = collections.OrderedDict()
+
+    @staticmethod
+    def _bytes(pix):
+        return pix.get_rowstride() * pix.get_height()
+
+    def __contains__(self, key):
+        return key in self.kept
+
+    def get(self, key):
+        pix = self.kept.get(key)
+        if pix is not None:
+            self.kept.move_to_end(key)
+        return pix
+
+    def put(self, key, pix):
+        old = self.kept.pop(key, None)
+        if old is not None:
+            self.used -= self._bytes(old)
+        self.kept[key] = pix
+        self.used += self._bytes(pix)
+        while self.used > self.limit and len(self.kept) > 1:
+            _key, gone = self.kept.popitem(last=False)
+            self.used -= self._bytes(gone)
+
+
+_memo = Memo()
+_jobs = queue.Queue()  # (Thumbs, gen, path, image, size, crop) of every Thumbs
+_lock = threading.Lock()
+_runs = []  # the one thumbnail thread, while it runs
+
+
+def _work():
+    """The thumbnail thread of the process: ends after IDLE_S without work,
+    a new request starts it again."""
+    while True:
+        try:
+            job = _jobs.get(timeout=IDLE_S)
+        except queue.Empty:
+            with _lock:
+                if _jobs.empty():
+                    _runs.clear()
+                    return
+            continue
+        try:
+            job[0]._make(*job[1:])
+        except Exception:  # one bad file: the others go on
+            pass
 
 
 class Thumbs:
-    """Small pictures from thumbnail(), made and read in one thread and set
+    """Small pictures from thumbnail(), made and read in a thread and set
     on the GTK side. want(path, image, size, crop=True) sets image when its
     picture is ready (cropped to a square, or fitted); reset() forgets the
-    requests of a page gone. Loaded pictures are kept for the latest few
-    hundred files."""
+    requests of a page gone. All the Thumbs of a process share one thread,
+    which ends when idle, and keep loaded pictures up to MEMO_BYTES."""
 
     def __init__(self, post=None):
         self.post = post or GLib.idle_add
-        self.jobs = queue.Queue()
         self.gen = 0
-        self.memo = {}
-        threading.Thread(target=self._work, daemon=True).start()
+        self.memo = _memo
 
     def reset(self):
         self.gen += 1
 
     def want(self, path, image, size, crop=True):
-        key = (path, size, crop)
-        if key in self.memo:
-            image.set_from_pixbuf(self.memo[key])
+        pix = self.memo.get((path, size, crop))
+        if pix is not None:
+            image.set_from_pixbuf(pix)
             return
-        self.jobs.put((self.gen, path, image, size, crop))
+        with _lock:
+            _jobs.put((self, self.gen, path, image, size, crop))
+            if not _runs:
+                _runs.append(threading.Thread(target=_work, name="haltia-thumbs",
+                                              daemon=True))
+                _runs[0].start()
 
-    def _work(self):
-        while True:
-            gen, path, image, size, crop = self.jobs.get()
-            if gen != self.gen:
-                continue
-            thumb = photos.thumbnail(path)
-            if not thumb:
-                continue
-            try:
-                if crop:
-                    pix = photos.square(photos.pixbuf_of(thumb, size=size), size)
-                else:
-                    pix = photos.pixbuf_of(thumb, box=(size, size))
-            except ValueError:
-                continue
-            self.post(lambda g=gen, k=(path, size, crop), i=image, p=pix:
-                      (self._set(g, k, i, p), False)[1])
+    def _make(self, gen, path, image, size, crop):
+        if gen != self.gen:
+            return
+        thumb = photos.thumbnail(path)
+        if not thumb:
+            return
+        try:
+            if crop:
+                pix = photos.square(photos.pixbuf_of(thumb, size=size), size)
+            else:
+                pix = photos.pixbuf_of(thumb, box=(size, size))
+        except ValueError:
+            return
+        self.post(lambda g=gen, k=(path, size, crop), i=image, p=pix:
+                  (self._set(g, k, i, p), False)[1])
 
     def _set(self, gen, key, image, pix):
-        if len(self.memo) > 600:
-            self.memo.clear()
-        self.memo[key] = pix
+        self.memo.put(key, pix)
         if gen == self.gen:
             image.set_from_pixbuf(pix)
 

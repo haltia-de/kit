@@ -52,6 +52,14 @@ keeps:
 
 A non-zero exit (a crash, an older app without `--take-photo`), no app, or
 Flatpak: a dialog with `camera.Viewfinder` in the process.
+
+Release the camera when your window is not active: a program that shows a
+`camera.Viewfinder` calls its `pause()` when the window's `is-active` turns
+false and `resume()` when it turns true. A Wayland window left in the
+background stays mapped, so without it the camera stays held and a video
+call in another program finds it busy. `Viewfinder.capture(done)` always
+calls `done` on the main thread: the path, or `None` with `.failure` the
+`CameraError` (`BUSY`, `NONE`, `FAILED`); the picture comes back after it.
 `camera.available()` says whether there is a camera at all, so a program
 can hide its camera button; it blocks while it asks the devices (a second
 or more with libcamera) and keeps the answer for 30 seconds. Photos go to

@@ -48,17 +48,21 @@ SIZE = 256  # the freedesktop "large" thumbnail
 FAIL = "b8k-compat-1"  # the failure marker's name, kept: old markers stay valid
 SAFE = ["-protocol_whitelist", "file", "-format_whitelist",
         "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,asf,flv,mp3,ogg,flac,wav,aac,amr"]
+# Seconds for ffprobe and for each of ffmpeg's two tries: a video thumbnail
+# (PROBE_S + 2 * FRAME_S) ends before the reader is killed (worker.TIMEOUT_S).
+PROBE_S = 10
+FRAME_S = 20
 
 
 def _uncap():
     """In ffmpeg's and ffprobe's child: the address space up to the reader's
-    hard ceiling (worker.CEILING), and a minute of processor time."""
+    hard ceiling (worker.CEILING), and no more processor time than FRAME_S."""
     try:
         import resource
 
         _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
         resource.setrlimit(resource.RLIMIT_AS, (hard, hard))
-        resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
+        resource.setrlimit(resource.RLIMIT_CPU, (FRAME_S, FRAME_S))
     except (ImportError, ValueError, OSError):
         pass
 # Pictures come from anywhere (chats, cards): one too large to decode in a
@@ -123,7 +127,7 @@ def read_info(path, kind=None):
                 ["ffprobe", "-v", "error"] + SAFE +
                 ["-show_entries", "format=duration", "-of", "default=nw=1:nk=1",
                  "file:" + path], stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                timeout=20, preexec_fn=_uncap)
+                timeout=PROBE_S, preexec_fn=_uncap)
             info["duration"] = float(out.stdout.strip())
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
@@ -296,7 +300,7 @@ def _make(path):
                     ["ffmpeg", "-nostdin", "-v", "error", "-y"] + SAFE +
                     ["-ss", "%.2f" % at, "-i", "file:" + path, "-frames:v", "1", "-vf",
                      "scale=%d:%d:force_original_aspect_ratio=decrease" % (SIZE, SIZE), frame],
-                    stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+                    stdin=subprocess.DEVNULL, capture_output=True, timeout=FRAME_S,
                     preexec_fn=_uncap)
                 if os.path.exists(frame) and os.path.getsize(frame) > 0:
                     return pictures.load(frame, box=box)
