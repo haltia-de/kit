@@ -9,9 +9,10 @@ arch="noarch"
 provides="py3-b8k-compat=$pkgver-r$pkgrel"
 replaces="py3-b8k-compat"
 license="GPL-2.0-only"
-# Sound and media details: py3-mpv (mpv-libs), py3-mutagen, ffmpeg. The
-# vault: libsecret (its typelib is in the package itself).
-depends="python3 py3-gobject3 gtk+3.0 libsecret py3-mpv py3-mutagen ffmpeg"
+# Pictures: py3-pillow. Sound and media details: py3-mpv (mpv-libs),
+# py3-mutagen, ffmpeg. The vault: libsecret (its typelib is in the package
+# itself).
+depends="python3 py3-gobject3 gtk+3.0 libsecret py3-pillow py3-mpv py3-mutagen ffmpeg"
 makedepends="py3-gpep517 py3-setuptools py3-wheel"
 checkdepends="gdk-pixbuf"
 subpackages="$pkgname-pyc"

@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
 """The file reader in a process of its own: what parses files that came
-from anywhere (pictures through GdkPixbuf, tags and covers through
-mutagen, video through ffmpeg) runs here, with its memory capped, so a
-file made to exhaust or crash a parser costs a restart of this process,
-not the program.
+from anywhere (pictures through Pillow, tags and covers through mutagen,
+video through ffmpeg) runs here, with its memory capped and no display
+(it loads no Gtk), so a file made to exhaust or crash a parser costs a
+restart of this process, not the program.
 
     python3 -m haltia_kit.worker    reads one JSON request per line on
                                     stdin, answers one JSON line on stdout:
         {"op": "thumb", "path": p}            -> {"thumb": path or null}
         {"op": "info", "path": p, "kind": k}  -> {"info": {...}}
+        {"op": "picture", "path": p, "size": s, "box": [w, h], "out": f}
+            -> {"picture": {"width", "height", "alpha"}}, the pixels in f
+               (pictures.write)
 
 The program side is Worker: call(request) -> the answer, or None when the
 reader died, broke the protocol or took longer than TIMEOUT_S (it is
@@ -37,6 +40,8 @@ class Worker:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = here + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH")
                                     else "")
+        for name in ("WAYLAND_DISPLAY", "DISPLAY"):  # nothing here reaches the display
+            env.pop(name, None)
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "haltia_kit.worker"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -97,7 +102,7 @@ def serve():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ImportError, ValueError, OSError):
         pass
-    from haltia_kit import photos
+    from haltia_kit import photos, pictures
 
     for line in sys.stdin:
         try:
@@ -106,6 +111,9 @@ def serve():
                 answer = {"thumb": photos.make_thumbnail(req["path"])}
             elif req.get("op") == "info":
                 answer = {"info": photos.read_info(req["path"], req.get("kind"))}
+            elif req.get("op") == "picture":
+                answer = {"picture": pictures.write(req["path"], req["out"], req.get("size"),
+                                                    req.get("box"))}
             else:
                 answer = {"error": "unknown op"}
         except MemoryError:

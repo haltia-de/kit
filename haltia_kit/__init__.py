@@ -8,6 +8,9 @@
     photos    kind_of, thumbnail (freedesktop thumbnails), pixbuf_of, square,
               Thumbs (small pictures loaded in a thread), Viewer (photos one
               at a time)
+    pictures  pictures decoded with Pillow in the reader process, never
+              larger than needed
+    gallery   Thumbs and Viewer, the GTK side of photos
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
     testing   FakePlayer, FakeInhibit, FakeKeyring for programs' own tests
     worker    the reader process the photos module parses files in
