@@ -45,6 +45,6 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 `python3 tests/test_compat.py` (без экрана, libmpv и звуковой карты).
 
 Решение о разделении на устройство, оболочку и программы:
-[ADR 0001](https://github.com/haltia-de/device-lenovo-b8000h/blob/main/docs/adr/0001-three-layers.md).
+[ADR 0001](https://github.com/haltia-de/haltia/blob/main/docs/adr/0001-three-layers.md).
 
 Лицензия — GPL-2.0.
