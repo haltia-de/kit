@@ -365,6 +365,74 @@ assert v.take("c.txt") and ring.kept["c.txt"] == "new cookies"
 assert not os.path.exists(os.path.join(vdir, "c.txt")) and not v.take("c.txt")
 print("vault ok")
 
+# --- camera: videotestsrc in place of a camera ---------------------------------------
+from gi.repository import GLib  # noqa: E402
+
+from haltia_kit import camera  # noqa: E402
+
+Gst = camera.Gst
+if Gst is None or Gst.ElementFactory.find("videotestsrc") is None:
+    print("camera skipped: no GStreamer or no videotestsrc")
+else:
+    def test_source():
+        src = Gst.ElementFactory.make("videotestsrc", None)
+        src.set_property("is-live", True)
+        return src
+
+    def gone_source():
+        src = Gst.ElementFactory.make("v4l2src", None)
+        src.set_property("device", os.path.join(top, "no-video0"))
+        return src
+
+    def pump(until):
+        end = time.time() + 10
+        while not until() and time.time() < end:
+            GLib.MainContext.default().iteration(False)
+            time.sleep(0.01)
+
+    test_cam = camera.Camera("Тест", test_source)
+    shots = os.path.join(top, "shots")
+    got = camera.capture(test_cam, where=shots, orientation=6, settle=2)
+    assert os.path.dirname(got) == shots
+    assert os.path.basename(got).startswith("IMG_") and got.endswith(".jpg")
+    with Image.open(got) as im:
+        assert im.size == (320, 240) and im.getexif()[0x0112] == 6
+    again = camera.capture(test_cam, where=shots, settle=0)
+    assert again != got  # the same second: another name, the first one kept
+    assert sorted(os.listdir(shots)) == sorted(os.path.basename(p) for p in (got, again))
+    assert camera.folder().endswith(os.sep + "Камера")
+
+    class Err:  # a GStreamer error as GLib.Error gives it
+        domain, code, message = "gst-resource-error-quark", int(Gst.ResourceError.BUSY), "x"
+
+    assert camera._state_of(Err) == camera.BUSY
+    Err.code, Err.message = int(Gst.ResourceError.FAILED), "Camera 'x' is already in use."
+    assert camera._state_of(Err) == camera.BUSY
+    Err.message = "Cannot identify device"
+    assert camera._state_of(Err) == camera.FAILED
+
+    frames, states = [], []
+    pv = camera.Preview(test_cam, lambda w, h, d: frames.append((w, h, len(d))), states.append)
+    pv.start()
+    pump(lambda: frames)
+    pv.stop()  # the camera off
+    assert frames and frames[0] == (320, 240, 320 * 240 * 4), frames
+    assert states == [camera.ON, camera.OFF] and pv.pipe is None, states
+
+    if Gst.ElementFactory.find("v4l2src") is not None:
+        gone = camera.Camera("Нет", gone_source)
+        try:
+            camera.capture(gone, where=shots, timeout=3)
+            raise AssertionError("a camera that is not there gave a photo")
+        except camera.CameraError as e:
+            assert e.state == camera.FAILED
+        states = []
+        pv = camera.Preview(gone, lambda *_a: None, states.append)
+        pv.start()  # said as a state, never raised
+        pump(lambda: states)
+        assert states == [camera.FAILED] and pv.pipe is None, states
+    print("camera ok")
+
 # --- formats -------------------------------------------------------------------------
 assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"
 assert formats.plural(3, "файл", "файла", "файлов") == "3 файла"

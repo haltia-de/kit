@@ -11,8 +11,9 @@ Rules-Requires-Root: no
 Package: python3-haltia-kit
 Architecture: all
 Depends: ${misc:Depends}, ${python3:Depends}, python3-gi, gir1.2-gtk-3.0,
- gir1.2-secret-1, python3-gi-cairo, python3-pil, python3-mpv, python3-mutagen
-Recommends: ffmpeg
+ gir1.2-secret-1, python3-gi-cairo, python3-pil, python3-mpv, python3-mutagen,
+ gir1.2-gstreamer-1.0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
+Recommends: ffmpeg, gstreamer1.0-libcamera
 Description: what the Haltia programs share (GTK 3)
  haltia_kit holds what the programs of Haltia, a calm touch desktop, have
  in common: large questions, settings, keeping the machine awake while

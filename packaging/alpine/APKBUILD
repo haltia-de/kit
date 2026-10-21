@@ -11,8 +11,10 @@ replaces="py3-b8k-compat"
 license="GPL-2.0-only"
 # Pictures: py3-pillow. Sound and media details: py3-mpv (mpv-libs),
 # py3-mutagen, ffmpeg. The vault: libsecret (its typelib is in the package
-# itself).
-depends="python3 py3-gobject3 gtk+3.0 libsecret py3-pillow py3-mpv py3-mutagen ffmpeg"
+# itself). The camera: gstreamer with gst-plugins-base and gst-plugins-good
+# (v4l2src); libcamerasrc (libcamera-gstreamer) comes with the device.
+depends="python3 py3-gobject3 gtk+3.0 libsecret py3-pillow py3-mpv py3-mutagen ffmpeg
+	gstreamer gst-plugins-base gst-plugins-good"
 makedepends="py3-gpep517 py3-setuptools py3-wheel"
 checkdepends="gdk-pixbuf"
 subpackages="$pkgname-pyc"

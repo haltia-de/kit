@@ -15,8 +15,8 @@ module name stays as an alias and the packages replace the old one.
 ## Layout
 
 - `haltia_kit/`: the modules (`settings`, `dialogs`, `awake`, `sound`,
-  `photos`, `pictures`, `gallery`, `formats`, `paths`, `vault`, `worker`,
-  `testing`); `README.md`
+  `photos`, `pictures`, `gallery`, `camera`, `formats`, `paths`, `vault`,
+  `worker`, `testing`); `README.md`
   has a table of what each one gives.
 - `b8k_compat/`: the alias for the old module name, until 3.0.
 - `tests/test_compat.py`: the tests.
@@ -33,6 +33,19 @@ module name stays as an alias and the packages replace the old one.
   `pip install .`.
 - Folders only through the GLib XDG functions: in Flatpak `~` is closed and
   settings and data live in `~/.var/app/<id>/`.
+
+## A photo for a program
+
+`haltia_kit.camera.take_photo(parent=None)` returns the path of the photo
+the person kept, or `None` when they cancelled. It runs the Camera app
+(`haltia-de/camera`, desktop id `io.github.haltia_de.Camera`, still to be
+agreed there) as its `Exec` line with `--take-photo`: the app prints the
+kept photo's path on standard output and exits 0, or exits without a path
+on cancel. Without the app (or inside Flatpak) it opens a dialog with
+`camera.Viewfinder` in the process. `camera.available()` says whether there
+is a camera at all, so a program can hide its camera button. Photos go to
+the XDG pictures folder + `Камера`, as `IMG_YYYYMMDD_HHMMSS.jpg`. The tests
+use `videotestsrc` in place of a camera.
 
 ## Release
 
