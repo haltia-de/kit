@@ -63,6 +63,11 @@ class Worker:
                 self.proc.wait(timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass
+            for pipe in (self.proc.stdin, self.proc.stdout):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass  # a broken pipe to a reader already gone
             self.proc = None
 
     def call(self, request):

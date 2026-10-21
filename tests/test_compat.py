@@ -515,6 +515,33 @@ class Compat(unittest.TestCase):
             camera.cameras = real
             camera._seen[:] = []
 
+    def test_12b_camera_front(self):
+        """Which way a camera faces, in both spellings of libcamera's
+        property: a front or external one mirrors, a back one not."""
+        from haltia_kit import camera
+
+        class Device:
+            def __init__(self, props):
+                self.props = props
+
+            def get_properties(self):
+                return self
+
+            def get_string(self, key):
+                return self.props.get(key)
+
+        def faces(props):
+            return camera._front(Device(props))
+
+        key = "api.libcamera.Location"
+        assert faces({key: "CameraLocationFront"}) is True
+        assert faces({key: "CameraLocationExternal"}) is True
+        assert faces({key: "CameraLocationBack"}) is False
+        assert faces({"api.libcamera.location": "front"}) is True
+        assert faces({"api.libcamera.location": "back"}) is False
+        assert faces({"device.bus": "usb"}) is True
+        assert faces({}) is False
+
     def test_13_formats(self):
         assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"
         assert formats.plural(3, "файл", "файла", "файлов") == "3 файла"

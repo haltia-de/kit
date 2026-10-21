@@ -105,9 +105,13 @@ def _front(device):
     props = device.get_properties()
     if props is None:
         return False
-    for key in ("api.libcamera.location", "camera.location", "location"):
+    for key in ("api.libcamera.location", "api.libcamera.Location", "camera.location",
+                "location"):
         where = props.get_string(key)
-        if where:
+        if where:  # "front", or libcamera's "CameraLocationFront"
+            where = where.lower()
+            if where.startswith("cameralocation"):
+                where = where[len("cameralocation"):]
             return where in ("front", "external")
     return props.get_string("device.bus") == "usb"  # a webcam faces the person
 
