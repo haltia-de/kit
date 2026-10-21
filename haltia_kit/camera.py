@@ -3,7 +3,9 @@
 program.
 
     available()              is there a camera (a program hides its camera
-                             button when not)
+                             button when not); it asks the devices, which
+                             takes a while with libcamera, so the answer
+                             is kept for SEEN_FOR seconds
     cameras()                the cameras found: libcamera first, else V4L2
     capture(camera=None)     a still at full resolution, saved as JPEG in
                              <XDG pictures>/Камера -> its path
@@ -15,7 +17,9 @@ The pipelines run on GStreamer's threads (libcamerasrc, or v4l2src where
 libcamera does not know the camera); a viewfinder gets only the latest
 frame, on the GTK main thread. A viewfinder holds the camera only while it
 is mapped: hidden or unmapped, its pipeline is stopped and the camera is
-off.
+off. A webcam that gives only MJPEG is decoded with jpegdec. A front
+camera is mirrored only in the viewfinder: its photos are saved as the
+camera sees them, unmirrored, like the photos of other camera apps.
 
 A camera another program holds is the state BUSY, never an exception into
 GTK: the viewfinder says so itself and tells changed(state), so a program
@@ -23,10 +27,18 @@ can say it its own way («Камера занята звонком»). capture()
 CameraError, whose state is BUSY, NONE or FAILED.
 
 take_photo() runs the Camera app (APP) as its command line with
---take-photo: the app prints the path of the photo kept on its standard
-output and exits, or exits without one when the person cancelled. Where
-the app is not installed (or inside Flatpak, which does not see it), a
-dialog with a Viewfinder takes the photo in this process.
+--take-photo. The contract with the app:
+- with --take-photo it runs as an instance of its own
+  (Gio.ApplicationFlags.NON_UNIQUE), never handing the request to an
+  instance already open: that one would answer nothing, read here as a
+  cancel. If the open instance holds the camera, the new one shows BUSY;
+- the photo kept: its absolute path as the last line of standard output,
+  then exit 0;
+- cancelled: exit 0 without a path.
+Other lines of the output are not read. Where the app is not installed
+(or inside Flatpak, which does not see it), or it exits with an error
+(a crash, or an older app that does not know --take-photo), a dialog with
+a Viewfinder takes the photo in this process.
 """
 import os
 import threading
@@ -45,8 +57,13 @@ try:
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst  # noqa: E402
     Gst.init(None)
+except (ImportError, ValueError, GLib.Error):
+    Gst = None  # no GStreamer, or it would not start: no camera
+try:
+    gi.require_version("GstVideo", "1.0")
+    from gi.repository import GstVideo  # noqa: E402
 except (ImportError, ValueError):
-    Gst = None  # no GStreamer: no camera
+    GstVideo = None  # frames read as packed rows
 
 APP = "io.github.haltia_de.Camera"
 FOLDER = "Камера"  # in the pictures folder
@@ -55,9 +72,12 @@ OFF, ON, BUSY, NONE, FAILED = "off", "on", "busy", "none", "failed"
 NOTES = {BUSY: "Камера занята другой программой.", NONE: "Камеры нет.",
          FAILED: "Камера не включилась."}
 
+RAW, JPEG = "video/x-raw", "image/jpeg"  # the kinds of picture a camera gives
 # The viewfinder asks the camera for a picture no larger than this: enough
 # for a screen, light to convert every frame.
-PREVIEW_RAW = "video/x-raw,width=[1,1280],height=[1,1280]"
+PREVIEW_RAW = RAW + ",width=[1,1280],height=[1,1280]"
+PREVIEW_JPEG = JPEG + ",width=[1,1280],height=[1,1280]"  # a webcam of MJPEG only
+SEEN_FOR = 30  # seconds available() keeps its answer
 SETTLE = 5  # frames let go by before a still: exposure and focus settle
 RANK = {"libcamerasrc": 0, "v4l2src": 1}  # the others: pipewiresrc and the like
 
@@ -113,8 +133,16 @@ def cameras():
     return [cam for rank, cam in found if rank == best]
 
 
+_seen = []  # (when, the answer) of the last available()
+
+
 def available():
-    return bool(cameras())
+    """Is there a camera. Asking the devices blocks (a second or more with
+    libcamera), so the answer is kept for SEEN_FOR seconds."""
+    now = time.monotonic()
+    if not _seen or now - _seen[0] > SEEN_FOR:
+        _seen[:] = [now, bool(cameras())]
+    return _seen[1]
 
 
 def _first():
@@ -150,51 +178,78 @@ def _role(src, role):
             Gst.util_set_object_arg(pad, "stream-role", role)
 
 
-def _largest(src):
-    """The largest raw picture a V4L2 camera gives, (width, height), or None
-    (then the camera chooses)."""
+def _sizes(src):
+    """The largest picture of each kind (RAW, JPEG) a V4L2 camera gives:
+    {kind: (width, height)}; empty for other cameras (then they choose)."""
     if _kind(src) != "v4l2src":
-        return None
-    best = None
+        return {}
+    best = {}
     if src.set_state(Gst.State.READY) != Gst.StateChangeReturn.FAILURE:
         caps = src.get_static_pad("src").query_caps(None)
         for i in range(caps.get_size()):
             s = caps.get_structure(i)
-            if s.get_name() != "video/x-raw":
+            kind = s.get_name()
+            if kind not in (RAW, JPEG):
                 continue
             (ok_w, w), (ok_h, h) = s.get_int("width"), s.get_int("height")
-            if ok_w and ok_h and (best is None or w * h > best[0] * best[1]):
-                best = (w, h)
+            if ok_w and ok_h and (kind not in best or w * h > best[kind][0] * best[kind][1]):
+                best[kind] = (w, h)
     src.set_state(Gst.State.NULL)
     return best
 
 
-def _pipeline(src, raw, out):
-    """src (caps raw) -> convert and scale -> out -> an appsink keeping the
-    latest frame: (pipeline, sink)."""
-    parts = [src] + [Gst.ElementFactory.make(n, None)
-                     for n in ("videoconvert", "videoscale", "capsfilter", "appsink")]
+def _pipeline(src, caps, out):
+    """src (caps: raw, or JPEG decoded here) -> convert and scale -> out ->
+    an appsink keeping the latest frame: (pipeline, sink)."""
+    names = (["jpegdec"] if caps.startswith(JPEG) else []) + \
+        ["videoconvert", "videoscale", "capsfilter", "appsink"]
+    parts = [Gst.ElementFactory.make(n, None) for n in names]
     if any(p is None for p in parts):
         raise CameraError(FAILED)
-    _src, conv, scale, filt, sink = parts
+    filt, sink = parts[-2:]
     filt.set_property("caps", Gst.Caps.from_string(out))
     sink.set_property("max-buffers", 1)
     sink.set_property("drop", True)
     sink.set_property("sync", False)
     pipe = Gst.Pipeline.new(None)
-    for p in parts:
+    for p in [src] + parts:
         pipe.add(p)
-    if not (src.link_filtered(conv, Gst.Caps.from_string(raw)) and conv.link(scale)
-            and scale.link(filt) and filt.link(sink)):
+    if not (src.link_filtered(parts[0], Gst.Caps.from_string(caps))
+            and all(a.link(b) for a, b in zip(parts, parts[1:]))):
         raise CameraError(FAILED)
     return pipe, sink
 
 
+def _layout(sample, width):
+    """(offset, stride) of a frame's rows: the buffer's video meta, else
+    the caps', else rows packed one after another."""
+    if GstVideo is not None:
+        try:
+            meta = GstVideo.buffer_get_video_meta(sample.get_buffer())
+            if meta is not None:
+                return int(meta.offset[0]), int(meta.stride[0])
+            info = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
+            if info is not None:
+                return int(info.offset[0]), int(info.stride[0])
+        except Exception:  # an older GstVideo or PyGObject without these fields
+            pass
+    return 0, width * 4
+
+
 def _frame(sample):
-    """(width, height, bytes) of a sample of 4 bytes a pixel."""
+    """(width, height, bytes) of a sample of 4 bytes a pixel, its rows
+    packed (width * 4 bytes each) whatever the stride of the buffer."""
     s = sample.get_caps().get_structure(0)
+    w, h = s.get_int("width")[1], s.get_int("height")[1]
     buf = sample.get_buffer()
-    return s.get_int("width")[1], s.get_int("height")[1], buf.extract_dup(0, buf.get_size())
+    offset, stride = _layout(sample, w)
+    row = w * 4
+    if stride < row or offset + stride * (h - 1) + row > buf.get_size():
+        offset, stride = 0, row  # a layout that does not fit: as packed
+    if stride == row:
+        return w, h, buf.extract_dup(offset, row * h)
+    data = buf.extract_dup(0, buf.get_size())
+    return w, h, b"".join(data[offset + y * stride:offset + y * stride + row] for y in range(h))
 
 
 def _save(image, where, orientation):
@@ -242,9 +297,14 @@ def capture(camera=None, where=None, orientation=1, settle=SETTLE, timeout=10):
     if src is None:
         raise CameraError(FAILED)
     _role(src, "still-capture")
-    size = _largest(src)
-    raw = "video/x-raw" + (",width=%d,height=%d" % size if size else "")
-    pipe, sink = _pipeline(src, raw, "video/x-raw,format=RGBx,pixel-aspect-ratio=1/1")
+    sizes = _sizes(src)
+    kind = RAW  # or JPEG, where the webcam gives a larger picture as MJPEG only
+    if JPEG in sizes and (RAW not in sizes or
+                          sizes[JPEG][0] * sizes[JPEG][1] > sizes[RAW][0] * sizes[RAW][1]):
+        kind = JPEG
+    size = sizes.get(kind)
+    caps = kind + (",width=%d,height=%d" % size if size else "")
+    pipe, sink = _pipeline(src, caps, RAW + ",format=RGBx,pixel-aspect-ratio=1/1")
     sample, frames = None, 0
     try:
         pipe.set_state(Gst.State.PLAYING)
@@ -297,8 +357,9 @@ class Preview:
             if src is None:
                 raise CameraError(FAILED)
             _role(src, "view-finder")
-            pipe, sink = _pipeline(src, PREVIEW_RAW,
-                                   "video/x-raw,format=RGBA,pixel-aspect-ratio=1/1")
+            sizes = _sizes(src)
+            caps = PREVIEW_JPEG if JPEG in sizes and RAW not in sizes else PREVIEW_RAW
+            pipe, sink = _pipeline(src, caps, RAW + ",format=RGBA,pixel-aspect-ratio=1/1")
         except CameraError as e:
             self._state(e.state)
             return
@@ -363,7 +424,8 @@ class Preview:
 
 class Viewfinder(Gtk.Overlay):
     """The camera's picture, fitted on black, mirrored for a front camera
-    (mirror None: as the camera says). The camera is on only while the
+    (mirror None: as the camera says; the photo itself is never mirrored).
+    The camera is on only while the
     widget is mapped. changed(state) is told the state; capture(done) takes
     a photo with the orientation in .orientation and gives done its path,
     or None (the viewfinder says why)."""
@@ -459,16 +521,27 @@ class Viewfinder(Gtk.Overlay):
             self.preview.start()
 
 
-def _from_app(parent):
-    """The Camera app's answer: a path, None when cancelled, False when there
-    is no app to ask."""
+def _app_argv():
+    """The Camera app's command line with --take-photo, or None where it is
+    not installed."""
     info = Gio.DesktopAppInfo.new(APP + ".desktop")
     if info is None or not info.get_commandline():
-        return False
+        return None
     try:
-        argv = [a for a in GLib.shell_parse_argv(info.get_commandline())[1]
-                if not (len(a) == 2 and a[0] == "%")]  # the field codes
-        proc = Gio.Subprocess.new(argv + ["--take-photo"], Gio.SubprocessFlags.STDOUT_PIPE)
+        args = GLib.shell_parse_argv(info.get_commandline())[1]
+    except GLib.Error:
+        return None
+    # Without the field codes (%U and the like): nothing to open.
+    return [a for a in args if not (len(a) == 2 and a[0] == "%")] + ["--take-photo"]
+
+
+def _ask(argv, parent=None):
+    """Runs argv, the window parent insensitive meanwhile -> the absolute
+    path of a file on the last line of its output when it exits 0, None
+    when it exits 0 without one (cancelled), False when it did not run or
+    failed (then the dialog here)."""
+    try:
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE)
     except GLib.Error:
         return False
     loop = GLib.MainLoop()
@@ -477,8 +550,7 @@ def _from_app(parent):
     def finished(p, res):
         try:
             _ok, stdout, _err = p.communicate_utf8_finish(res)
-            if p.get_successful():
-                out.append(stdout or "")
+            out.append((p.get_successful(), stdout or ""))
         except GLib.Error:
             pass
         loop.quit()
@@ -489,9 +561,11 @@ def _from_app(parent):
     loop.run()
     if parent is not None:
         parent.set_sensitive(True)
-    lines = [line.strip() for line in "".join(out).splitlines() if line.strip()]
+    if not out or not out[0][0]:
+        return False
+    lines = [line.strip() for line in out[0][1].splitlines() if line.strip()]
     path = lines[-1] if lines else None
-    return path if path and os.path.isfile(path) else None
+    return path if path and os.path.isabs(path) and os.path.isfile(path) else None
 
 
 def _remove(path):
@@ -577,7 +651,8 @@ def _take_here(parent):
 def take_photo(parent=None):
     """A photo for any program: the Camera app, or a dialog here -> the path
     of the photo the person kept, or None when they cancelled."""
-    path = _from_app(parent)
+    argv = _app_argv()
+    path = _ask(argv, parent) if argv else False
     if path is not False:
         return path
     return _take_here(parent)
