@@ -15,7 +15,8 @@ module name stays as an alias and the packages replace the old one.
 ## Layout
 
 - `haltia_kit/`: the modules (`settings`, `dialogs`, `awake`, `sound`,
-  `photos`, `formats`, `paths`, `vault`, `worker`, `testing`); `README.md`
+  `photos`, `pictures`, `gallery`, `formats`, `paths`, `vault`, `worker`,
+  `testing`); `README.md`
   has a table of what each one gives.
 - `b8k_compat/`: the alias for the old module name, until 3.0.
 - `tests/test_compat.py`: the tests.

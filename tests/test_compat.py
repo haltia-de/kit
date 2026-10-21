@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 """haltia-kit through its interface: settings, awake, the fake player,
-the player's awake rule, kinds, thumbnails, the vault, formats.
-Run: python3 tests/test_compat.py (PyGObject with GdkPixbuf; no display,
+the player's awake rule, kinds, thumbnails, pictures, the vault, formats.
+Run: python3 tests/test_compat.py (PyGObject with GdkPixbuf, Pillow; no display,
 no libmpv, no sound card, no keyring needed)."""
 import os
 import sys
@@ -248,6 +248,47 @@ w.close()
 sq = photos.square(tp, 64)
 assert (sq.get_width(), sq.get_height()) == (64, 64)
 print("thumbnails ok")
+
+# --- pictures: Pillow in the reader process, never larger than needed ----------------
+from PIL import Image  # noqa: E402
+
+from haltia_kit import pictures  # noqa: E402
+
+jpg = os.path.join(top, "Кот.jpg")
+Image.new("RGB", (3000, 2000), (200, 30, 30)).save(jpg)
+assert pictures.load(jpg, box=(800, 600)).size == (800, 533)
+assert pictures.load(jpg, size=5000).size == (3000, 2000)  # not scaled up
+turned = os.path.join(top, "turned.jpg")
+exif = Image.Exif()
+exif[0x0112] = 6  # taken on its side
+Image.new("RGB", (300, 200)).save(turned, exif=exif)
+assert pictures.load(turned, box=(100, 100)).size == (67, 100)  # upright
+see = os.path.join(top, "see.png")
+Image.new("RGBA", (40, 20), (0, 0, 0, 0)).save(see)
+os.environ["WAYLAND_DISPLAY"] = os.environ["DISPLAY"] = "nowhere"
+photos._reader[0].close()  # started again, with these
+pix = photos.pixbuf_of(jpg, box=(800, 600))
+assert (pix.get_width(), pix.get_height(), pix.get_has_alpha()) == (800, 533, False)
+assert abs(pix.get_pixels()[0] - 200) < 8  # its own colour, not noise
+pix = photos.pixbuf_of(pic, 256)
+assert (pix.get_width(), pix.get_height()) == (512, 256)
+assert photos.pixbuf_of(see, 256).get_has_alpha()
+with open("/proc/%d/environ" % photos._reader[0].proc.pid, "rb") as fh:
+    env = fh.read().split(b"\0")
+assert not [e for e in env if e.startswith((b"WAYLAND_DISPLAY=", b"DISPLAY="))]
+for bad in (song, huge):
+    try:
+        photos.pixbuf_of(bad, 256)
+        raise AssertionError("a bad picture must not be decoded")
+    except ValueError:
+        pass
+import subprocess  # noqa: E402
+
+assert subprocess.run(  # what the reader imports loads no Gtk
+    [sys.executable, "-c", "import sys; import haltia_kit.photos, haltia_kit.worker; "
+     "sys.exit('gi.repository.Gtk' in sys.modules)"],
+    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))).returncode == 0
+print("pictures ok")
 
 # --- vault: the keyring when one answers, else a 0600 file; locked is said ----------
 import stat  # noqa: E402

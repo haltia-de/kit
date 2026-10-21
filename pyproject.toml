@@ -9,7 +9,7 @@ description = "What the Haltia programs share: questions, settings, sound, photo
 readme = "README.md"
 license = { text = "GPL-2.0-only" }
 requires-python = ">=3.9"
-dependencies = ["PyGObject"]
+dependencies = ["PyGObject", "Pillow"]
 
 [project.optional-dependencies]
 sound = ["python-mpv"]
