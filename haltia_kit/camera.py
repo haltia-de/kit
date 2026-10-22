@@ -28,6 +28,14 @@ only MJPEG is decoded with jpegdec. A front
 camera is mirrored only in the viewfinder: its photos are saved as the
 camera sees them, unmirrored, like the photos of other camera apps.
 
+The picture turns with the screen: the shell writes how far the device
+is turned clockwise from its natural position (normal, 90, 180 or 270) in
+ROTATION_FILE, $XDG_RUNTIME_DIR/haltia/rotation. A videoflip after the
+source (in the viewfinder, in capture(), and in the element of
+Camera.make() where the file is or the sensor is mounted turned) turns the
+picture by that and by the sensor's mounting (libcamera's Rotation), and
+follows the file while it plays. Without the file (a PC): no turn.
+
 A camera another program holds is the state BUSY, never an exception into
 GTK: the viewfinder says so itself and tells changed(state), so a program
 can say it its own way («Камера занята звонком»). capture() raises
@@ -50,6 +58,7 @@ a Viewfinder takes the photo in this process.
 import os
 import threading
 import time
+import weakref
 
 import gi
 
@@ -90,6 +99,11 @@ RANK = {"libcamerasrc": 0, "v4l2src": 1}  # the others: pipewiresrc and the like
 # libcamera's control Contrast for libcamerasrc: its soft ISP gives a milky
 # picture at 1.0 (no colour matrix); a little more is a table, almost free.
 CONTRAST = 1.25
+# How far the device is turned clockwise, written by the shell.
+ROTATION_FILE = os.path.join(GLib.get_user_runtime_dir(), "haltia", "rotation")
+SCREEN = {"normal": 0, "90": 90, "180": 180, "270": 270}
+# videoflip's video-direction for a clockwise turn of the picture.
+DIRECTIONS = {0: "identity", 90: "90r", 180: "180", 270: "90l"}
 
 
 class CameraError(Exception):
@@ -106,20 +120,130 @@ def _contrast(src, value):
     src.set_property("contrast", float(value))
 
 
+def screen():
+    """How far the device is turned clockwise (0, 90, 180, 270), as the
+    shell writes it in ROTATION_FILE; 0 without the file."""
+    try:
+        with open(ROTATION_FILE, encoding="utf-8") as fh:
+            return SCREEN.get(fh.read().strip(), 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _turn(cam, turned):
+    """The clockwise turn (0, 90, 180, 270) of cam's picture for the device
+    turned clockwise by turned: the sensor's mounting, then the screen's.
+    A front camera looks the other way, so the screen turns its unmirrored
+    picture back the other way (as Android's JPEG orientation does)."""
+    mount = int(round((cam.mount or 0) / 90.0)) * 90
+    return (mount + (-turned if cam.front else turned)) % 360
+
+
+_flips = weakref.WeakKeyDictionary()  # the videoflips playing -> their camera
+_flips_lock = threading.Lock()
+_watch = []  # the monitor of ROTATION_FILE, made once
+
+
+def _direct(flip, degrees):
+    if flip.find_property("video-direction") is not None:
+        Gst.util_set_object_arg(flip, "video-direction", DIRECTIONS[degrees])
+    else:  # GStreamer before 1.10
+        Gst.util_set_object_arg(flip, "method", {0: "none", 90: "clockwise", 180: "rotate-180",
+                                                 270: "counterclockwise"}[degrees])
+
+
+def _turn_all(*_a):
+    """On the main thread, the file changed: every videoflip turned anew."""
+    turned = screen()
+    with _flips_lock:
+        live = list(_flips.items())
+    for flip, cam in live:
+        _direct(flip, _turn(cam, turned))
+
+
+def _flip(cam):
+    """A videoflip turning cam's picture with the screen, followed while it
+    lives -> the element, or None without videoflip."""
+    flip = Gst.ElementFactory.make("videoflip", "turn")
+    if flip is None:
+        return None
+    _direct(flip, _turn(cam, screen()))
+    # An attribute keeps the Python wrapper alive as long as the element,
+    # so the weak entry lasts as long as the element does.
+    flip.haltia_camera = cam.name
+    with _flips_lock:
+        try:
+            _flips[flip] = cam
+        except TypeError:  # an object without weak references: not followed
+            pass
+        if not _watch:
+            try:  # made on the default main context, whatever the thread
+                mon = Gio.File.new_for_path(ROTATION_FILE).monitor_file(
+                    Gio.FileMonitorFlags.NONE, None)
+                mon.connect("changed", _turn_all)
+                _watch.append(mon)
+            except GLib.Error:
+                pass
+    return flip
+
+
+def _turned(cam, src):
+    """src -> videoflip in a bin, its pad "src"; src itself where the flip
+    does not link (a picture videoflip does not take, like MJPEG)."""
+    flip = _flip(cam)
+    if flip is None:
+        return src
+    box = Gst.Bin.new(None)
+    box.add(src)
+    box.add(flip)
+    if not src.link(flip):
+        box.remove(src)
+        return src
+    box.add_pad(Gst.GhostPad.new("src", flip.get_static_pad("src")))
+    return box
+
+
 class Camera:
     """A camera: name, front (faces the person: mirrored in the viewfinder),
-    make() -> a new GStreamer source element for it, with contrast (None:
-    the camera's own) where it is libcamerasrc."""
+    mount (the sensor's clockwise turn, libcamera's Rotation), make() -> a
+    new GStreamer element for it: its source, with contrast (None: the
+    camera's own) where it is libcamerasrc, and a videoflip turning the
+    picture with the screen (a bin) where ROTATION_FILE is or mount is not
+    0. source() is the source alone."""
 
-    def __init__(self, name, make, front=False, contrast=CONTRAST):
-        self.name, self.front, self.contrast = name, front, contrast
+    def __init__(self, name, make, front=False, contrast=CONTRAST, mount=0):
+        self.name, self.front, self.contrast, self.mount = name, front, contrast, mount
         self._make = make
 
-    def make(self):
+    def source(self):
         src = self._make()
         if src is not None:
             _contrast(src, self.contrast)
         return src
+
+    def make(self):
+        src = self.source()
+        if src is None or Gst is None or not isinstance(src, Gst.Element) or \
+                not (_turn(self, 0) or os.path.exists(ROTATION_FILE)):
+            return src
+        return _turned(self, src)
+
+
+def _mount(device):
+    """The sensor's clockwise turn in degrees from the device's properties
+    (libcamera's Rotation, where its provider gives it), else 0."""
+    props = device.get_properties()
+    if props is None:
+        return 0
+    for key in ("api.libcamera.rotation", "api.libcamera.Rotation", "camera.rotation",
+                "rotation"):
+        try:
+            value = props.get_value(key)
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return 0
 
 
 def _front(device):
@@ -155,7 +279,7 @@ def cameras(contrast=CONTRAST):
         kind = element.get_factory().get_name() if element else None
         found.append((RANK.get(kind, len(RANK)),
                       Camera(dev.get_display_name(), lambda d=dev: d.create_element(None),
-                             _front(dev), contrast)))
+                             _front(dev), contrast, _mount(dev))))
     if not found:
         return []
     # The same camera is often seen by several: only the best kind is kept.
@@ -235,14 +359,17 @@ def _sizes(src):
     return best
 
 
-def _pipeline(src, caps, out):
-    """src (caps: raw, or JPEG decoded here) -> convert and scale -> out ->
-    an appsink keeping the latest frame: (pipeline, sink)."""
+def _pipeline(src, caps, out, flip=None):
+    """src (caps: raw, or JPEG decoded here) -> convert, turn (flip, a
+    videoflip, if any) and scale -> out -> an appsink keeping the latest
+    frame: (pipeline, sink)."""
     names = (["jpegdec"] if caps.startswith(JPEG) else []) + \
         ["videoconvert", "videoscale", "capsfilter", "appsink"]
     parts = [Gst.ElementFactory.make(n, None) for n in names]
     if any(p is None for p in parts):
         raise CameraError(FAILED)
+    if flip is not None:
+        parts.insert(len(parts) - 3, flip)  # after videoconvert
     filt, sink = parts[-2:]
     filt.set_property("caps", Gst.Caps.from_string(out))
     sink.set_property("max-buffers", 1)
@@ -330,7 +457,7 @@ def capture(camera=None, where=None, orientation=1, settle=SETTLE, timeout=10):
     cam = camera or _first()
     if cam is None:
         raise CameraError(NONE)
-    src = cam.make()
+    src = cam.source()
     if src is None:
         raise CameraError(FAILED)
     _role(src, "still-capture")
@@ -341,7 +468,7 @@ def capture(camera=None, where=None, orientation=1, settle=SETTLE, timeout=10):
         kind = JPEG
     size = sizes.get(kind)
     caps = kind + (",width=%d,height=%d" % size if size else "")
-    pipe, sink = _pipeline(src, caps, RAW + ",format=RGBx,pixel-aspect-ratio=1/1")
+    pipe, sink = _pipeline(src, caps, RAW + ",format=RGBx,pixel-aspect-ratio=1/1", _flip(cam))
     sample, frames = None, 0
     try:
         pipe.set_state(Gst.State.PLAYING)
@@ -400,13 +527,14 @@ class Preview:
             cam = self.camera or (_first() if Gst is not None else None)
             if cam is None:
                 raise CameraError(NONE)
-            src = cam.make()
+            src = cam.source()
             if src is None:
                 raise CameraError(FAILED)
             _role(src, "view-finder")
             sizes = _sizes(src)
             caps = PREVIEW_JPEG if JPEG in sizes and RAW not in sizes else PREVIEW_RAW
-            pipe, sink = _pipeline(src, caps, RAW + ",format=RGBA,pixel-aspect-ratio=1/1")
+            pipe, sink = _pipeline(src, caps, RAW + ",format=RGBA,pixel-aspect-ratio=1/1",
+                                   _flip(cam))
             got = cam, pipe, sink, None
         except CameraError as e:
             got = None, None, None, e.state

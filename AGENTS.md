@@ -71,6 +71,18 @@ milky soft ISP picture), where it has it as the property `contrast`;
 leaves the camera's own. The tests use
 `videotestsrc` in place of a camera.
 
+The picture turns with the screen. The shell writes
+`$XDG_RUNTIME_DIR/haltia/rotation` (`camera.ROTATION_FILE`): `normal`, `90`,
+`180` or `270`, how far the device is turned clockwise from its natural
+position. A `videoflip` after the source in the `Viewfinder`, in
+`capture()` and in the element of `Camera.make()` (a bin with the pad
+`src`, made only where the file is or the sensor is mounted turned; the
+source alone is `Camera.source()`) turns the picture clockwise by the
+sensor's mounting (`Camera.mount`, libcamera's Rotation where the device
+gives it) plus the screen's turn, minus it for a front camera (it looks
+the other way). The file is watched, and the turn follows it while the
+picture plays. Without the file (a PC, Flatpak) there is no turn.
+
 ## Sending a file to another program
 
 `haltia_kit.share.send(path, parent=None)` opens the dialog «Отправить»:
