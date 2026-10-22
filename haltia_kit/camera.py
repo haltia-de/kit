@@ -15,9 +15,14 @@ program.
 
 The pipelines run on GStreamer's threads (libcamerasrc, or v4l2src where
 libcamera does not know the camera); a viewfinder gets only the latest
-frame, on the GTK main thread. A viewfinder holds the camera only while it
-is mapped: hidden or unmapped, its pipeline is stopped and the camera is
-off. A webcam that gives only MJPEG is decoded with jpegdec. A front
+frame, on the GTK main thread. Finding the camera and opening it happen on
+a thread of their own, never blocking the GTK loop. A viewfinder holds the
+camera only while it is mapped and not paused: hidden, unmapped or
+paused, its pipeline is stopped and the camera is off. A window left in
+the background stays mapped (Wayland), so a program calls pause() when
+its window stops being active and resume() when it is active again: a
+video call in another program finds the camera free. A webcam that gives
+only MJPEG is decoded with jpegdec. A front
 camera is mirrored only in the viewfinder: its photos are saved as the
 camera sees them, unmirrored, like the photos of other camera apps.
 
@@ -100,9 +105,13 @@ def _front(device):
     props = device.get_properties()
     if props is None:
         return False
-    for key in ("api.libcamera.location", "camera.location", "location"):
+    for key in ("api.libcamera.location", "api.libcamera.Location", "camera.location",
+                "location"):
         where = props.get_string(key)
-        if where:
+        if where:  # "front", or libcamera's "CameraLocationFront"
+            where = where.lower()
+            if where.startswith("cameralocation"):
+                where = where[len("cameralocation"):]
             return where in ("front", "external")
     return props.get_string("device.bus") == "usb"  # a webcam faces the person
 
@@ -133,20 +142,27 @@ def cameras():
     return [cam for rank, cam in found if rank == best]
 
 
-_seen = []  # (when, the answer) of the last available()
+_seen = []  # (when, the cameras found) of the last asking
+
+
+def _known():
+    """cameras(), kept for SEEN_FOR seconds: asking the devices blocks (a
+    second or more with libcamera)."""
+    now = time.monotonic()
+    seen = _seen[:]
+    if not seen or now - seen[0] > SEEN_FOR:
+        seen = [now, cameras()]
+        _seen[:] = seen
+    return seen[1]
 
 
 def available():
-    """Is there a camera. Asking the devices blocks (a second or more with
-    libcamera), so the answer is kept for SEEN_FOR seconds."""
-    now = time.monotonic()
-    if not _seen or now - _seen[0] > SEEN_FOR:
-        _seen[:] = [now, bool(cameras())]
-    return _seen[1]
+    """Is there a camera. The answer is kept for SEEN_FOR seconds."""
+    return bool(_known())
 
 
 def _first():
-    found = cameras()
+    found = _known()
     return found[0] if found else None
 
 
@@ -332,7 +348,8 @@ class Preview:
     """A viewfinder's pipeline, apart from GTK: start(), stop(). shown(width,
     height, bytes of RGBA) gets the latest frame and changed(state) the
     state (OFF, ON, BUSY, NONE, FAILED), both through post (on the main
-    thread). camera None: the first of cameras()."""
+    thread). camera None: the first of cameras(). start() returns at once:
+    the camera is found and its pipeline made on a thread of its own."""
 
     def __init__(self, camera, shown, changed, post=None):
         self.camera, self.shown, self.changed = camera, shown, changed
@@ -341,18 +358,27 @@ class Preview:
         self.pipe = self.bus = None
         self.state = OFF
         self.gen = 0
+        self.asked = 0  # the latest start()
+        self.opening = 0  # the start() being opened, 0 for none
         self.frame = None
         self.pending = False
         self.lock = threading.Lock()
 
     def start(self):
-        if self.pipe is not None:
+        if self.pipe is not None or self.opening:
             return
-        cam = self.camera or (_first() if Gst is not None else None)
-        if cam is None:
-            self._state(NONE)
-            return
+        self.asked += 1
+        self.opening = self.asked
+        threading.Thread(target=self._open, args=(self.asked,), daemon=True).start()
+
+    def _open(self, asked):
+        """On a thread of its own: finding the camera and asking it its sizes
+        block, the GTK loop does not wait for them."""
+        got = None, None, None, FAILED
         try:
+            cam = self.camera or (_first() if Gst is not None else None)
+            if cam is None:
+                raise CameraError(NONE)
             src = cam.make()
             if src is None:
                 raise CameraError(FAILED)
@@ -360,8 +386,22 @@ class Preview:
             sizes = _sizes(src)
             caps = PREVIEW_JPEG if JPEG in sizes and RAW not in sizes else PREVIEW_RAW
             pipe, sink = _pipeline(src, caps, RAW + ",format=RGBA,pixel-aspect-ratio=1/1")
+            got = cam, pipe, sink, None
         except CameraError as e:
-            self._state(e.state)
+            got = None, None, None, e.state
+        except Exception:  # whatever it was: said as FAILED, never left opening
+            pass
+        finally:
+            self.post(lambda: (self._opened(asked, *got), False)[1])
+
+    def _opened(self, asked, cam, pipe, sink, state):
+        if asked != self.opening:  # stopped meanwhile
+            if pipe is not None:
+                pipe.set_state(Gst.State.NULL)
+            return
+        self.opening = 0
+        if state is not None:
+            self._state(state)
             return
         self.used, self.pipe = cam, pipe
         self.gen += 1
@@ -374,6 +414,7 @@ class Preview:
             self._fail(self.bus.pop_filtered(Gst.MessageType.ERROR))
 
     def stop(self, state=OFF):
+        self.opening = 0  # one being opened is let go when it comes
         if self.pipe is None:
             return
         self.gen += 1
@@ -425,10 +466,13 @@ class Preview:
 class Viewfinder(Gtk.Overlay):
     """The camera's picture, fitted on black, mirrored for a front camera
     (mirror None: as the camera says; the photo itself is never mirrored).
-    The camera is on only while the
-    widget is mapped. changed(state) is told the state; capture(done) takes
-    a photo with the orientation in .orientation and gives done its path,
-    or None (the viewfinder says why)."""
+    The camera is on only while the widget is mapped and not paused:
+    pause() when the window stops being active, resume() when it is active
+    again. changed(state) is told the state; capture(done) takes a photo
+    with the orientation in .orientation and always calls done on the main
+    thread: with its path, or with None and .failure the CameraError
+    (state BUSY, NONE or FAILED; the viewfinder says it too). After a
+    photo, taken or not, the picture comes back."""
 
     def __init__(self, camera=None, mirror=None, changed=None):
         super().__init__()
@@ -439,6 +483,8 @@ class Viewfinder(Gtk.Overlay):
         self.orientation = 1
         self.pix = None
         self.taking = False
+        self.paused = False
+        self.failure = None  # the CameraError of the last capture, None when taken
         self.area = Gtk.DrawingArea(hexpand=True, vexpand=True)
         self.area.set_size_request(160, 120)
         self.area.connect("draw", self._draw)
@@ -456,7 +502,17 @@ class Viewfinder(Gtk.Overlay):
         return self.preview.state
 
     def _map(self, _w):
-        if not self.taking:
+        if not self.taking and not self.paused:
+            self.preview.start()
+
+    def pause(self):
+        """The camera off, for a window that is not active (still mapped)."""
+        self.paused = True
+        self.preview.stop()
+
+    def resume(self):
+        self.paused = False
+        if self.get_mapped() and not self.taking:
             self.preview.start()
 
     def _shown(self, w, h, data):
@@ -498,27 +554,38 @@ class Viewfinder(Gtk.Overlay):
         cam = self.preview.used or self.preview.camera
         self.preview.stop()  # one pipeline at a time holds the camera
         self.note.set_text("Снимаю…")
-        orientation = self.orientation
-
-        def work():
-            try:
-                path, state = capture(cam, orientation=orientation), None
-            except CameraError as e:
-                path, state = None, e.state
-            except (OSError, ValueError):
-                path, state = None, FAILED
-            GLib.idle_add(lambda: (self._taken(done, path, state), False)[1])
-
-        threading.Thread(target=work, daemon=True).start()
+        _shoot(cam, self.orientation, lambda path, state: self._taken(done, path, state))
 
     def _taken(self, done, path, state):
         self.taking = False
         self.note.set_text("")
+        self.failure = CameraError(state) if state is not None else None
         if state is not None:
             self.preview._state(state)
-        done(path)
-        if state is None and self.get_mapped():
-            self.preview.start()
+        try:
+            done(path)
+        finally:
+            if self.get_mapped() and not self.paused:
+                self.preview.start()  # the picture back, after a failed still too
+
+
+def _shoot(cam, orientation, done, post=None):
+    """capture() on a thread; done(path, None) or done(None, state) through
+    post (on the main thread) whatever happened there."""
+    post = post or GLib.idle_add
+
+    def work():
+        path, state = None, FAILED
+        try:
+            path, state = capture(cam, orientation=orientation), None
+        except CameraError as e:
+            state = e.state
+        except Exception:  # unexpected: FAILED, never «Снимаю…» for ever
+            pass
+        finally:
+            post(lambda: (done(path, state), False)[1])
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 def _app_argv():
@@ -587,6 +654,9 @@ def _take_here(parent):
     dialog.set_default_size(720, 640)
     stack = Gtk.Stack(vexpand=True)
     view = Viewfinder()
+    # The camera free for others while the dialog is in the background.
+    dialog.connect("notify::is-active",
+                   lambda d, _p: view.resume() if d.is_active() else view.pause())
     shot = Gtk.Image()
     stack.add_named(view, "view")
     stack.add_named(shot, "shot")

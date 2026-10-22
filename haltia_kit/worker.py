@@ -16,10 +16,14 @@ restart of this process, not the program.
 The program side is Worker: call(request) -> the answer, or None when the
 reader died, broke the protocol or took longer than TIMEOUT_S (it is
 killed and started again for the next request). One request at a time.
+The reader runs in a process group of its own, which its ffmpeg and
+ffprobe join: killing it kills the whole group, nothing goes on decoding.
+A request never needs longer than TIMEOUT_S (photos.PROBE_S, FRAME_S).
 """
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -45,15 +49,25 @@ class Worker:
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "haltia_kit.worker"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=env, cwd="/", close_fds=True, text=True, bufsize=1)
+            env=env, cwd="/", close_fds=True, text=True, bufsize=1,
+            start_new_session=True)  # its group: the reader and its children
 
     def _kill(self):
         if self.proc is not None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)  # ffmpeg and ffprobe too
+            except OSError:
+                pass  # the group is gone already
             try:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass
+            for pipe in (self.proc.stdin, self.proc.stdout):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass  # a broken pipe to a reader already gone
             self.proc = None
 
     def call(self, request):

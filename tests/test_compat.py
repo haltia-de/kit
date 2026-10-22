@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zlib
@@ -94,12 +95,30 @@ def vault(ring, **kw):
     return Vault(APP, vdir, key="account", keyring=ring, runtime_dir=vrun, **kw)
 
 
-def pump(until):
+def pump(until, wait=10):
     from gi.repository import GLib
-    end = time.time() + 10
+    end = time.time() + wait
     while not until() and time.time() < end:
         GLib.MainContext.default().iteration(False)
         time.sleep(0.01)
+
+
+def alive(pid):
+    """A process running, not a zombie waiting to be reaped."""
+    try:
+        with open("/proc/%d/stat" % pid) as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def live_source(Gst):
+    """make() of a camera that is videotestsrc."""
+    def make():
+        src = Gst.ElementFactory.make("videotestsrc", None)
+        src.set_property("is-live", True)
+        return src
+    return make
 
 
 def gst_or_skip(case):
@@ -496,6 +515,33 @@ class Compat(unittest.TestCase):
             camera.cameras = real
             camera._seen[:] = []
 
+    def test_12b_camera_front(self):
+        """Which way a camera faces, in both spellings of libcamera's
+        property: a front or external one mirrors, a back one not."""
+        from haltia_kit import camera
+
+        class Device:
+            def __init__(self, props):
+                self.props = props
+
+            def get_properties(self):
+                return self
+
+            def get_string(self, key):
+                return self.props.get(key)
+
+        def faces(props):
+            return camera._front(Device(props))
+
+        key = "api.libcamera.Location"
+        assert faces({key: "CameraLocationFront"}) is True
+        assert faces({key: "CameraLocationExternal"}) is True
+        assert faces({key: "CameraLocationBack"}) is False
+        assert faces({"api.libcamera.location": "front"}) is True
+        assert faces({"api.libcamera.location": "back"}) is False
+        assert faces({"device.bus": "usb"}) is True
+        assert faces({}) is False
+
     def test_13_formats(self):
         assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"
         assert formats.plural(3, "файл", "файла", "файлов") == "3 файла"
@@ -504,6 +550,159 @@ class Compat(unittest.TestCase):
         oct17 = time.mktime((2026, 10, 17, 12, 0, 0, 0, 0, -1))
         assert formats.nice_date(oct17, now=oct17) == "17 окт"
         assert formats.month(oct17) == "Октябрь 2026"
+
+    def test_14_reader_group(self):
+        """A reader killed at its timeout takes its ffprobe with it; a video
+        thumbnail fits in the reader's time."""
+        from haltia_kit import worker
+
+        assert photos.PROBE_S + 2 * photos.FRAME_S < worker.TIMEOUT_S
+        fake = os.path.join(top, "fakebin")
+        os.makedirs(fake)
+        pidfile = os.path.join(top, "ffprobe.pid")
+        probe = os.path.join(fake, "ffprobe")
+        with open(probe, "w") as fh:  # an ffprobe that hangs
+            fh.write("#!/bin/sh\necho $$ > '%s'\nexec sleep 60\n" % pidfile)
+        os.chmod(probe, 0o755)
+        path = os.environ["PATH"]
+        os.environ["PATH"] = fake + os.pathsep + path
+        w = worker.Worker(timeout=4)
+        try:
+            assert w.call({"op": "info", "path": os.path.join(top, "slow.mp4"),
+                           "kind": "video"}) is None
+        finally:
+            os.environ["PATH"] = path
+            w.close()
+        with open(pidfile) as fh:
+            pid = int(fh.read())
+        end = time.time() + 5
+        while alive(pid) and time.time() < end:
+            time.sleep(0.05)
+        assert not alive(pid), "ffprobe outlived its reader"
+
+    def test_15_thumbs(self):
+        """One thumbnail thread for all the Thumbs, ended when idle; the
+        pictures kept are bounded by their bytes."""
+        from haltia_kit import gallery
+
+        def pixbuf(side):
+            return GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, side, side)
+
+        memo = gallery.Memo(limit=3 * 30000)  # three of 100 x 100 RGB
+        for key in "abc":
+            memo.put(key, pixbuf(100))
+        assert memo.get("a") is not None  # now the latest
+        memo.put("d", pixbuf(100))
+        assert "b" not in memo and all(k in memo for k in "acd") and memo.used == 90000
+        memo.put("e", pixbuf(400))  # larger than the limit: only it is kept
+        assert list(memo.kept) == ["e"] and memo.used == 400 * 1200
+
+        class Img:
+            pix = None
+
+            def set_from_pixbuf(self, pix):
+                self.pix = pix
+
+        def threads():
+            return sum(t.name == "haltia-thumbs" for t in threading.enumerate())
+
+        real = gallery.IDLE_S
+        gallery.IDLE_S = 0.3
+        try:
+            images = [Img(), Img()]
+            for image in images:  # a chooser window each
+                gallery.Thumbs(post=lambda fn: fn()).want(pic, image, 64)
+            assert threads() <= 1
+            end = time.time() + 30
+            while not all(i.pix for i in images) and time.time() < end:
+                time.sleep(0.05)
+            assert all(i.pix and i.pix.get_width() == 64 for i in images)
+            end = time.time() + 5
+            while threads() and time.time() < end:
+                time.sleep(0.05)
+            assert threads() == 0 and not gallery._runs  # idle: ended
+            again = Img()
+            gallery.Thumbs(post=lambda fn: fn()).want(pic, again, 32)  # started again
+            end = time.time() + 30
+            while again.pix is None and time.time() < end:
+                time.sleep(0.05)
+            assert again.pix is not None and again.pix.get_width() == 32
+        finally:
+            gallery.IDLE_S = real
+
+    def test_16_camera_never_waits(self):
+        """The viewfinder finds its camera off the main thread; pause()
+        lets the camera go; a still always ends, said on the main thread,
+        and the picture comes back after it."""
+        camera, Gst = gst_or_skip(self)
+        real = camera.cameras
+        camera.cameras = lambda: time.sleep(1) or []
+        camera._seen[:] = []
+        try:
+            states = []
+            pv = camera.Preview(None, lambda *_a: None, states.append)
+            t = time.monotonic()
+            pv.start()
+            assert time.monotonic() - t < 0.5  # the devices are asked on a thread
+            pump(lambda: states)
+            assert states == [camera.NONE], states
+        finally:
+            camera.cameras = real
+            camera._seen[:] = []
+
+        test_cam = camera.Camera("Тест", live_source(Gst))
+        frames, states = [], []
+        pv = camera.Preview(test_cam, lambda *_a: frames.append(1), states.append)
+        pv.start()
+        pv.stop()  # before it opened: it never does
+        pump(lambda: frames, wait=1)
+        assert not frames and not states and pv.pipe is None, states
+
+        def boom(*_a, **_k):
+            raise RuntimeError("not a CameraError")
+
+        def busy(*_a, **_k):
+            raise camera.CameraError(camera.BUSY)
+
+        real = camera.capture
+        try:
+            for fake, want in ((boom, (None, camera.FAILED)), (busy, (None, camera.BUSY)),
+                               (lambda *_a, **_k: "/p/IMG.jpg", ("/p/IMG.jpg", None))):
+                camera.capture = fake
+                got = []
+                camera._shoot(test_cam, 1, lambda path, state: got.append((path, state)))
+                pump(lambda: got)
+                assert got == [want], got
+        finally:
+            camera.capture = real
+
+        from gi.repository import Gdk, Gtk
+        if Gdk.Display.get_default() is None:
+            return  # the widget itself needs a display
+        vf = camera.Viewfinder(test_cam)
+        win = Gtk.OffscreenWindow()
+        win.add(vf)
+        win.show_all()
+        try:
+            pump(lambda: vf.state == camera.ON)
+            assert vf.state == camera.ON
+            vf.pause()  # the window in the background, still mapped
+            assert vf.state == camera.OFF and vf.preview.pipe is None
+            vf.resume()
+            pump(lambda: vf.state == camera.ON)
+            assert vf.state == camera.ON
+            taken = []
+            camera.capture = boom
+            try:
+                vf.capture(taken.append)
+                pump(lambda: taken)
+            finally:
+                camera.capture = real
+            assert taken == [None] and vf.failure.state == camera.FAILED
+            pump(lambda: vf.state == camera.ON)
+            assert vf.state == camera.ON and not vf.taking  # the picture back
+        finally:
+            win.destroy()
 
 
 if __name__ == "__main__":
