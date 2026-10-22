@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0
 """haltia-kit through its interface: settings, awake, the fake player,
 the player's awake rule, kinds, thumbnails, pictures, the vault, the camera,
-formats. Run: python3 tests/test_compat.py, or python3 -m unittest from the
+formats, sharing. Run: python3 tests/test_compat.py, or python3 -m unittest from the
 tests folder (PyGObject with GdkPixbuf, Pillow; no display, no libmpv, no
 sound card, no keyring, no camera needed). The tests run in the order of
 their numbers: later ones use the files of earlier ones."""
@@ -20,6 +20,27 @@ import zlib
 top = tempfile.mkdtemp()
 os.environ["XDG_CACHE_HOME"] = os.path.join(top, "cache")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(top, "config")
+# The programs share sends to: fake .desktop files, made before GLib first
+# reads the folders (the system's stay after them, for the MIME database).
+os.environ["XDG_DATA_HOME"] = os.path.join(top, "data")
+os.environ["XDG_DATA_DIRS"] = os.path.join(top, "share") + ":" + \
+    (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share")
+received = os.path.join(top, "received")
+receiver = os.path.join(top, "receiver")
+with open(receiver, "w") as fh:
+    fh.write('#!/bin/sh\nprintf "%%s\\n" "$@" > %s.part && mv %s.part %s\n'
+             % (received, received, received))
+os.chmod(receiver, 0o755)
+os.makedirs(os.path.join(top, "share", "applications"))
+for _id, _name, _types, _share in (("Photos", "Фото", "image/*;", True),
+                                   ("Notes", "Заметки", "text/plain;image/png;", True),
+                                   ("Plain", "Просмотр", "image/*;", False),
+                                   ("Self", "Сам", "image/*;", True)):
+    with open(os.path.join(top, "share", "applications",
+                           "test.share.%s.desktop" % _id), "w") as fh:
+        fh.write("[Desktop Entry]\nType=Application\nName=%s\nExec=%s %%F\n"
+                 "MimeType=%s\n%s" % (_name, receiver, _types,
+                                      "X-Haltia-Share=true\n" if _share else ""))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gi  # noqa: E402
@@ -735,6 +756,43 @@ class Compat(unittest.TestCase):
             assert vf.state == camera.ON and not vf.taking  # the picture back
         finally:
             win.destroy()
+
+    def test_17_share(self):
+        """The programs a file can be sent to: X-Haltia-Share and a MimeType
+        that matches, wildcards too, never the program calling; the one
+        chosen gets the file as its argument."""
+        from gi.repository import Gio
+        from haltia_kit import share
+
+        def ids(found):
+            return [info.get_id()[len("test.share."):-len(".desktop")]
+                    for info in found if info.get_id().startswith("test.share.")]
+
+        real = share._own
+        share._own = lambda: None
+        try:
+            assert ids(share.targets("image/png")) == ["Notes", "Self", "Photos"]
+        finally:
+            share._own = real
+        share._own = lambda: "test.share.Self.desktop"
+        try:
+            assert ids(share.targets("image/png")) == ["Notes", "Photos"]
+            assert ids(share.targets("image/jpeg")) == ["Photos"]
+            assert ids(share.targets("text/plain")) == ["Notes"]
+            assert ids(share.targets("audio/mpeg")) == []
+            if Gio.content_type_guess("x.png", None)[0] == "image/png":  # a MIME database
+                assert ids(share.targets(pic)) == ["Notes", "Photos"]
+                nameless = os.path.join(top, "nameless")
+                Image.new("RGB", (4, 4)).save(nameless, "PNG")
+                assert ids(share.targets(nameless)) == ["Notes", "Photos"]  # sniffed
+        finally:
+            share._own = real
+
+        info = Gio.DesktopAppInfo.new("test.share.Photos.desktop")
+        assert share.launch(info, pic)
+        pump(lambda: os.path.exists(received))
+        with open(received) as fh:
+            assert fh.read() == pic + "\n"
 
 
 if __name__ == "__main__":

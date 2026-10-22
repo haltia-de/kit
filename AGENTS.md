@@ -15,7 +15,7 @@ module name stays as an alias and the packages replace the old one.
 ## Layout
 
 - `haltia_kit/`: the modules (`settings`, `dialogs`, `awake`, `sound`,
-  `photos`, `pictures`, `gallery`, `camera`, `formats`, `paths`, `vault`,
+  `photos`, `pictures`, `gallery`, `camera`, `share`, `formats`, `paths`, `vault`,
   `worker`, `testing`); `README.md`
   has a table of what each one gives.
 - `b8k_compat/`: the alias for the old module name, until 3.0.
@@ -70,6 +70,29 @@ milky soft ISP picture), where it has it as the property `contrast`;
 `cameras(contrast=...)` or `Camera(..., contrast=...)` changes it, `None`
 leaves the camera's own. The tests use
 `videotestsrc` in place of a camera.
+
+## Sending a file to another program
+
+`haltia_kit.share.send(path, parent=None)` opens the dialog «Отправить»:
+one big button (icon and name) per program that takes the file, and
+«Отмена», the default. It asks even with a single program, so the person
+sees where the file goes; with none it says «Отправить некуда». It does
+not wait: it returns the dialog, which does its work on the GTK loop.
+`share.targets(path_or_mime)` gives those programs (`Gio.DesktopAppInfo`,
+by name); a path is absolute or exists, anything else is a MIME type. The
+contract a receiver keeps:
+
+- its `.desktop` has `X-Haltia-Share=true`, a `MimeType=` with the types it
+  takes (a whole kind as `image/*` too), and `%U`, `%u`, `%F` or `%f` in
+  `Exec=`;
+- it is launched with `Gio.DesktopAppInfo.launch_uris` and the file's
+  `file://` URI, and gets the file as its argument (in a `GApplication`
+  with `HANDLES_OPEN`, through `open`);
+- the file may be in the sender's own folder: a receiver that keeps it
+  copies it.
+
+The program calling is never offered: its desktop id is its application id
+(`Gio.Application.get_default()`).
 
 ## Release
 
