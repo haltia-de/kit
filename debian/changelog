@@ -1,3 +1,15 @@
+haltia-kit (2.3.0) unstable; urgency=medium
+
+  * Картинки декодируются Pillow в процессе-читателе с ограничением
+    ресурсов (#4).
+  * haltia_kit.camera: видоискатель, capture() и take_photo() для программ,
+    pause()/resume(), фронтальная камера libcamera и контраст для мягкой
+    картинки soft ISP (#6, #9, #13).
+  * haltia_kit.share: «Отправить» в программы, принимающие файл (#11).
+  * Исправления второго аудита в читателе и миниатюрах (#9).
+
+ -- Haltia <rensomail@gmail.com>  Thu, 22 Oct 2026 12:00:00 +0300
+
 haltia-kit (2.2.0) unstable; urgency=medium
 
   * haltia_kit.vault: a program's secrets in the Secret Service through
