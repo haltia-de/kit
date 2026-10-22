@@ -20,6 +20,9 @@ import zlib
 top = tempfile.mkdtemp()
 os.environ["XDG_CACHE_HOME"] = os.path.join(top, "cache")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(top, "config")
+# The shell's rotation file, never the real one: its folder here, no file yet.
+os.environ["XDG_RUNTIME_DIR"] = os.path.join(top, "xdg-run")
+os.makedirs(os.path.join(top, "xdg-run", "haltia"), mode=0o700)
 # The programs share sends to: fake .desktop files, made before GLib first
 # reads the folders (the system's stay after them, for the MIME database).
 os.environ["XDG_DATA_HOME"] = os.path.join(top, "data")
@@ -594,6 +597,82 @@ class Compat(unittest.TestCase):
         assert made("v4l2src", True) == {}
         assert made("videotestsrc", True) == {}
         assert camera.Camera("Нет", lambda: None).make() is None
+
+    def test_12d_camera_turn(self):
+        """The picture turns with the screen as the shell writes it, and
+        with the sensor's mounting; it follows the file while it plays;
+        without the file there is no turn."""
+        camera, Gst = gst_or_skip(self)
+        rotation = camera.ROTATION_FILE
+        assert rotation == os.path.join(top, "xdg-run", "haltia", "rotation")
+
+        def write(text):  # as the shell would: whole, by a rename
+            with open(rotation + ".part", "w") as fh:
+                fh.write(text + "\n")
+            os.replace(rotation + ".part", rotation)
+
+        class Device:
+            def __init__(self, props):
+                self.props = props
+
+            def get_properties(self):
+                return self
+
+            def get_value(self, key):
+                return self.props.get(key)
+
+        assert camera._mount(Device({"api.libcamera.rotation": "270"})) == 270
+        assert camera._mount(Device({"api.libcamera.Rotation": 90})) == 90
+        assert camera._mount(Device({})) == 0
+
+        back = camera.Camera("Задняя", live_source(Gst))
+        front = camera.Camera("Передняя", live_source(Gst), front=True, mount=270)
+        assert camera.screen() == 0  # no file: a PC
+        assert camera._turn(back, 0) == 0 and camera._turn(front, 0) == 270
+        assert camera._turn(back, 90) == 90 and camera._turn(front, 90) == 180
+        assert camera._turn(camera.Camera("x", None, mount=90), 270) == 0
+        plain = back.make()
+        assert plain.get_factory().get_name() == "videotestsrc"  # no file, not turned
+        if Gst.ElementFactory.find("videoflip") is None:
+            return
+
+        def direction(flip):
+            return int(flip.get_property("video-direction"))
+
+        try:
+            write("garbage")
+            assert camera.screen() == 0
+            write("90")
+            assert camera.screen() == 90
+            got = camera.capture(back, where=os.path.join(top, "turned"), settle=1)
+            with Image.open(got) as im:
+                assert im.size == (240, 320), im.size  # videotestsrc's 320 x 240, turned
+
+            frames, states = [], []
+            pv = camera.Preview(back, lambda w, h, d: frames.append((w, h)), states.append)
+            pv.start()
+            pump(lambda: frames)
+            try:
+                assert frames and frames[0] == (240, 320), frames
+                flip = pv.pipe.get_by_name("turn")
+                assert direction(flip) == 1  # 90r
+                write("normal")  # turned back while it plays
+                pump(lambda: direction(flip) == 0)
+                assert direction(flip) == 0
+            finally:
+                pv.stop()
+
+            write("180")
+            made = back.make()  # a program's own pipeline: a bin, turned too
+            flip = made.get_by_name("turn")
+            assert made.get_static_pad("src") is not None and direction(flip) == 2
+            write("270")
+            pump(lambda: direction(flip) == 3)
+            assert direction(flip) == 3
+        finally:
+            for path in (rotation, rotation + ".part"):
+                if os.path.exists(path):
+                    os.remove(path)
 
     def test_13_formats(self):
         assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"
