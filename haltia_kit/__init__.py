@@ -13,6 +13,8 @@
     gallery   Thumbs and Viewer, the GTK side of photos
     camera    take_photo(parent), available(), Viewfinder, capture(): the
               camera through GStreamer (libcamera, else V4L2)
+    share     targets(path_or_mime), send(path, parent): a file sent to a
+              program whose .desktop says X-Haltia-Share=true
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
     testing   FakePlayer, FakeInhibit, FakeKeyring for programs' own tests
     worker    the reader process the photos module parses files in
