@@ -6,7 +6,9 @@ program.
                              button when not); it asks the devices, which
                              takes a while with libcamera, so the answer
                              is kept for SEEN_FOR seconds
-    cameras()                the cameras found: libcamera first, else V4L2
+    cameras(contrast=CONTRAST)  the cameras found: libcamera first, else
+                             V4L2; libcamerasrc gets the control Contrast
+                             (None: the camera's own)
     capture(camera=None)     a still at full resolution, saved as JPEG in
                              <XDG pictures>/Камера -> its path
     Viewfinder(camera=None)  a widget: the camera's picture, scaled to it,
@@ -85,6 +87,9 @@ PREVIEW_JPEG = JPEG + ",width=[1,1280],height=[1,1280]"  # a webcam of MJPEG onl
 SEEN_FOR = 30  # seconds available() keeps its answer
 SETTLE = 5  # frames let go by before a still: exposure and focus settle
 RANK = {"libcamerasrc": 0, "v4l2src": 1}  # the others: pipewiresrc and the like
+# libcamera's control Contrast for libcamerasrc: its soft ISP gives a milky
+# picture at 1.0 (no colour matrix); a little more is a table, almost free.
+CONTRAST = 1.25
 
 
 class CameraError(Exception):
@@ -93,12 +98,28 @@ class CameraError(Exception):
         self.state = state
 
 
+def _contrast(src, value):
+    """libcamera's control Contrast on a libcamerasrc that has it as a
+    property (libcamera 0.5 and later); other sources are left as they are."""
+    if value is None or _kind(src) != "libcamerasrc" or src.find_property("contrast") is None:
+        return
+    src.set_property("contrast", float(value))
+
+
 class Camera:
     """A camera: name, front (faces the person: mirrored in the viewfinder),
-    make() -> a new GStreamer source element for it."""
+    make() -> a new GStreamer source element for it, with contrast (None:
+    the camera's own) where it is libcamerasrc."""
 
-    def __init__(self, name, make, front=False):
-        self.name, self.make, self.front = name, make, front
+    def __init__(self, name, make, front=False, contrast=CONTRAST):
+        self.name, self.front, self.contrast = name, front, contrast
+        self._make = make
+
+    def make(self):
+        src = self._make()
+        if src is not None:
+            _contrast(src, self.contrast)
+        return src
 
 
 def _front(device):
@@ -116,7 +137,7 @@ def _front(device):
     return props.get_string("device.bus") == "usb"  # a webcam faces the person
 
 
-def cameras():
+def cameras(contrast=CONTRAST):
     if Gst is None:
         return []
     monitor = Gst.DeviceMonitor.new()
@@ -134,7 +155,7 @@ def cameras():
         kind = element.get_factory().get_name() if element else None
         found.append((RANK.get(kind, len(RANK)),
                       Camera(dev.get_display_name(), lambda d=dev: d.create_element(None),
-                             _front(dev))))
+                             _front(dev), contrast)))
     if not found:
         return []
     # The same camera is often seen by several: only the best kind is kept.

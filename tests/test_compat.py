@@ -542,6 +542,38 @@ class Compat(unittest.TestCase):
         assert faces({"device.bus": "usb"}) is True
         assert faces({}) is False
 
+    def test_12c_camera_contrast(self):
+        """libcamera's Contrast is set on a libcamerasrc that has it as a
+        property, never on one without it or on another source."""
+        from haltia_kit import camera
+
+        class Source:
+            def __init__(self, kind, has):
+                self.kind, self.has, self.props = kind, has, {}
+
+            def get_factory(self):
+                return self
+
+            def get_name(self):
+                return self.kind
+
+            def find_property(self, name):
+                return object() if self.has and name == "contrast" else None
+
+            def set_property(self, name, value):
+                self.props[name] = value
+
+        def made(kind, has, **kw):
+            return camera.Camera("Тест", lambda: Source(kind, has), **kw).make().props
+
+        assert made("libcamerasrc", True) == {"contrast": camera.CONTRAST}
+        assert made("libcamerasrc", True, contrast=1.5) == {"contrast": 1.5}
+        assert made("libcamerasrc", True, contrast=None) == {}
+        assert made("libcamerasrc", False) == {}  # an older libcamera: left as it is
+        assert made("v4l2src", True) == {}
+        assert made("videotestsrc", True) == {}
+        assert camera.Camera("Нет", lambda: None).make() is None
+
     def test_13_formats(self):
         assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"
         assert formats.plural(3, "файл", "файла", "файлов") == "3 файла"
