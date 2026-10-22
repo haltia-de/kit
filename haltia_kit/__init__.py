@@ -13,6 +13,9 @@
     gallery   Thumbs and Viewer, the GTK side of photos
     camera    take_photo(parent), available(), Viewfinder, capture(): the
               camera through GStreamer (libcamera, else V4L2)
+    crash     install(app_id, version, log): uncaught exceptions and
+              faulthandler kept in $XDG_STATE_HOME/haltia/crashes for
+              haltia-report (done on import, under the command's name)
     share     targets(path_or_mime), send(path, parent): a file sent to a
               program whose .desktop says X-Haltia-Share=true
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
@@ -29,3 +32,7 @@ freedesktop standards (.desktop files, logind, Unity LauncherEntry, the
 Secret Service).
 """
 __version__ = "2.2.0"
+
+from . import crash  # noqa: E402
+
+crash.install()  # every program importing kit: its crashes kept for haltia-report

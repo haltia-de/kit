@@ -16,7 +16,7 @@ module name stays as an alias and the packages replace the old one.
 
 - `haltia_kit/`: the modules (`settings`, `dialogs`, `awake`, `sound`,
   `photos`, `pictures`, `gallery`, `camera`, `share`, `formats`, `paths`, `vault`,
-  `worker`, `testing`); `README.md`
+  `worker`, `crash`, `testing`); `README.md`
   has a table of what each one gives.
 - `b8k_compat/`: the alias for the old module name, until 3.0.
 - `tests/test_compat.py`: the tests.
@@ -93,6 +93,37 @@ contract a receiver keeps:
 
 The program calling is never offered: its desktop id is its application id
 (`Gio.Application.get_default()`).
+
+## Crashes
+
+Importing `haltia_kit` calls `haltia_kit.crash.install()`, so every program
+keeps its crashes for haltia-report (the shell's), which reads
+`$XDG_STATE_HOME/haltia/crashes/` (`crash.folder()`). A program calls
+`crash.install(app_id, version=..., log=...)` once it knows them: until
+then the name is the command's (`sys.argv[0]`), the version unknown, no
+log. In the folder:
+
+- `<app>-<time>.json`, written atomically (a `.part` file renamed): an
+  exception nobody caught, through `sys.excepthook` (PyGObject calls it for
+  a GTK callback too, where the program may live on) or
+  `threading.excepthook`. Keys: `app`, `version`, `time` (ISO 8601 with
+  the zone), `pid`, `thread`, `exception` (`Type: message`), `traceback`
+  (in full, with the exceptions it came from), `argv`, `python`, `kit`,
+  `log` (its path) and `log_tail` (its last 200 lines, `crash.LOG_LINES`),
+  `null` when unknown. The hook that was there before still runs;
+  `KeyboardInterrupt` is not a crash. `crash.record(error)` writes one for
+  an error a program caught but cannot go on after.
+- `<app>-<time>-<pid>.fault`: faulthandler's file of one run, the first
+  line `# haltia-crash app=<app> version=<version> pid=<pid>`, then the
+  traceback of every thread after a segfault or an abort. A run that ends
+  removes its file; a killed one leaves just that line, and the next start
+  removes it. A file with more than that line is a crash. Hangs are not
+  watched (`faulthandler.dump_traceback_later` is not enabled).
+- Only the 20 newest crashes (`crash.KEEP`), json and fault, stay.
+
+GLib warnings and criticals are not crashes. `HALTIA_CRASH=no` turns it
+off; the reader process (`worker.py`) has it, as a file that crashes a
+parser is not the program's crash.
 
 ## Release
 
