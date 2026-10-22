@@ -63,7 +63,6 @@ import os
 import re
 import threading
 import time
-import weakref
 
 import gi
 
@@ -151,7 +150,10 @@ def _turn(cam, turned):
     return (mount + turned) % 360
 
 
-_flips = weakref.WeakKeyDictionary()  # the videoflips playing -> their camera
+# The videoflips playing: (a GObject weak reference to the element, its
+# camera). Weak on the element itself, not on its Python wrapper, which
+# dies when _flip() returns while the element plays on (#28).
+_flips = []
 _flips_lock = threading.Lock()
 _watch = []  # the monitor of ROTATION_FILE's folder, made once
 # The events of the folder that may give the file new contents: the shell
@@ -180,10 +182,17 @@ def _turn_all(_mon, what, other, event):
     if name not in [f.get_basename() for f in (what, other) if f is not None]:
         return
     turned = screen()
-    with _flips_lock:
-        live = list(_flips.items())
-    for flip, cam in live:
+    for flip, cam in _live():
         _direct(flip, _turn(cam, turned))
+
+
+def _live():
+    """The videoflips still there -> [(flip, camera)]; the gone ones are
+    forgotten."""
+    with _flips_lock:
+        live = [(ref(), cam) for ref, cam in _flips]
+        _flips[:] = [entry for entry, (flip, _cam) in zip(_flips, live) if flip is not None]
+    return [(flip, cam) for flip, cam in live if flip is not None]
 
 
 def _flip(cam):
@@ -193,14 +202,9 @@ def _flip(cam):
     if flip is None:
         return None
     _direct(flip, _turn(cam, screen()))
-    # An attribute keeps the Python wrapper alive as long as the element,
-    # so the weak entry lasts as long as the element does.
-    flip.haltia_camera = cam.name
+    _live()  # the gone ones forgotten
     with _flips_lock:
-        try:
-            _flips[flip] = cam
-        except TypeError:  # an object without weak references: not followed
-            pass
+        _flips.append((flip.weak_ref(), cam))
         if not _watch:
             try:  # made on the default main context, whatever the thread
                 folder = Gio.File.new_for_path(os.path.dirname(ROTATION_FILE))
@@ -221,11 +225,12 @@ def _swap(caps):
     return Gst.Caps.from_string(text)
 
 
-def _turned(cam, src, caps=None, turning=True):
+def _turned(cam, src, caps=None, turning=True, sensor=False):
     """src -> a capsfilter "size" (caps, the picture after the turn, swapped
-    for the source where it turns by 90 or 270) -> a videoflip (where
-    turning) in a bin, its pad "src". The caps come before the flip, so the
-    camera itself is asked for that size. What does not link is left out
+    for the source where it turns by 90 or 270; with sensor, the source's
+    own size, never swapped) -> a videoflip (where turning) in a bin, its
+    pad "src". The caps come before the flip, so the camera itself is asked
+    for that size. What does not link is left out
     (caps the source does not give, a picture videoflip does not take, like
     MJPEG); with nothing linked, src itself."""
     box = Gst.Bin.new(None)
@@ -234,7 +239,7 @@ def _turned(cam, src, caps=None, turning=True):
     if caps is not None:
         if not isinstance(caps, Gst.Caps):
             caps = Gst.Caps.from_string(caps)
-        if turning and _turn(cam, screen()) in (90, 270):
+        if turning and not sensor and _turn(cam, screen()) in (90, 270):
             caps = _swap(caps)
         size = Gst.ElementFactory.make("capsfilter", "size")
         size.set_property("caps", caps)
@@ -268,7 +273,10 @@ class Camera:
     the videoflip, so the camera gives that size itself; turned by 90 or
     270 when made, its width and height are swapped for the source, and
     a later turn turns the picture of that size, never opening the camera
-    again. source() is the source alone."""
+    again. make(caps=..., sensor=True) gives the source the caps as they
+    are, never swapped: the sensor's whole field, turned by the videoflip
+    alone (a landscape size turned by 90 comes out portrait, not a crop).
+    source() is the source alone."""
 
     def __init__(self, name, make, front=False, contrast=CONTRAST, mount=0):
         self.name, self.front, self.contrast, self.mount = name, front, contrast, mount
@@ -280,14 +288,14 @@ class Camera:
             _contrast(src, self.contrast)
         return src
 
-    def make(self, caps=None):
+    def make(self, caps=None, sensor=False):
         src = self.source()
         if src is None or Gst is None or not isinstance(src, Gst.Element):
             return src
         turning = bool(_turn(self, 0) or os.path.exists(ROTATION_FILE))
         if not turning and caps is None:
             return src
-        return _turned(self, src, caps, turning)
+        return _turned(self, src, caps, turning, sensor)
 
 
 def _mount(device):
