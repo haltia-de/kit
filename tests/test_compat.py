@@ -629,7 +629,8 @@ class Compat(unittest.TestCase):
         front = camera.Camera("Передняя", live_source(Gst), front=True, mount=270)
         assert camera.screen() == 0  # no file: a PC
         assert camera._turn(back, 0) == 0 and camera._turn(front, 0) == 270
-        assert camera._turn(back, 90) == 90 and camera._turn(front, 90) == 180
+        assert camera._turn(back, 90) == 90 and camera._turn(front, 90) == 0
+        assert camera._turn(front, 270) == 180  # the same sign as the back camera
         assert camera._turn(camera.Camera("x", None, mount=90), 270) == 0
         plain = back.make()
         assert plain.get_factory().get_name() == "videotestsrc"  # no file, not turned

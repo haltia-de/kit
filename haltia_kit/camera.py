@@ -141,10 +141,11 @@ def screen():
 def _turn(cam, turned):
     """The clockwise turn (0, 90, 180, 270) of cam's picture for the device
     turned clockwise by turned: the sensor's mounting, then the screen's.
-    A front camera looks the other way, so the screen turns its unmirrored
-    picture back the other way (as Android's JPEG orientation does)."""
+    The same for a front and a back camera: the picture is turned before
+    the viewfinder mirrors it, and with the opposite sign a front camera
+    came out upside down (Lenovo B8000-H, 22 Oct 2026)."""
     mount = int(round((cam.mount or 0) / 90.0)) * 90
-    return (mount + (-turned if cam.front else turned)) % 360
+    return (mount + turned) % 360
 
 
 _flips = weakref.WeakKeyDictionary()  # the videoflips playing -> their camera
