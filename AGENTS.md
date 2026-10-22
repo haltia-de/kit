@@ -86,8 +86,14 @@ position. A `videoflip` after the source in the `Viewfinder`, in
 source alone is `Camera.source()`) turns the picture clockwise by the
 sensor's mounting (`Camera.mount`, libcamera's Rotation where the device
 gives it) plus the screen's turn, minus it for a front camera (it looks
-the other way). The file is watched, and the turn follows it while the
-picture plays. Without the file (a PC, Flatpak) there is no turn.
+the other way). The file's folder is watched (the shell replaces the file
+by a rename), and the turn follows it while the picture plays. Without the
+file (a PC, Flatpak) there is no turn. A program's own size for the
+picture goes in `Camera.make(caps=...)`, never after the element: a
+capsfilter right after the source, before the `videoflip`, so libcamera
+gives that size itself (its width and height swapped for the source when
+turned 90 or 270 at `make()`); a size after the flip lets libcamera pick a
+larger one.
 
 ## Sending a file to another program
 

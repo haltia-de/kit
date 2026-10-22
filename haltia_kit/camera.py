@@ -36,7 +36,9 @@ ROTATION_FILE, $XDG_RUNTIME_DIR/haltia/rotation. A videoflip after the
 source (in the viewfinder, in capture(), and in the element of
 Camera.make() where the file is or the sensor is mounted turned) turns the
 picture by that and by the sensor's mounting (libcamera's Rotation), and
-follows the file while it plays. Without the file (a PC): no turn.
+follows the file while it plays (its folder is watched: the shell
+replaces the file by a rename). Without the file (a PC): no turn. A size
+for the picture goes before the videoflip: Camera.make(caps=...).
 
 A camera another program holds is the state BUSY, never an exception into
 GTK: the viewfinder says so itself and tells changed(state), so a program
@@ -58,6 +60,7 @@ Other lines of the output are not read. Where the app is not installed
 a Viewfinder takes the photo in this process.
 """
 import os
+import re
 import threading
 import time
 import weakref
@@ -150,7 +153,13 @@ def _turn(cam, turned):
 
 _flips = weakref.WeakKeyDictionary()  # the videoflips playing -> their camera
 _flips_lock = threading.Lock()
-_watch = []  # the monitor of ROTATION_FILE, made once
+_watch = []  # the monitor of ROTATION_FILE's folder, made once
+# The events of the folder that may give the file new contents: the shell
+# replaces it by a rename, which a monitor of the file itself may miss.
+_REREAD = (Gio.FileMonitorEvent.CHANGED, Gio.FileMonitorEvent.CHANGES_DONE_HINT,
+           Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.MOVED_IN,
+           Gio.FileMonitorEvent.RENAMED, Gio.FileMonitorEvent.DELETED,
+           Gio.FileMonitorEvent.MOVED_OUT)
 
 
 def _direct(flip, degrees):
@@ -161,8 +170,15 @@ def _direct(flip, degrees):
                                                  270: "counterclockwise"}[degrees])
 
 
-def _turn_all(*_a):
-    """On the main thread, the file changed: every videoflip turned anew."""
+def _turn_all(_mon, what, other, event):
+    """On the main thread, ROTATION_FILE's folder changed: where it was the
+    file (written, made, or renamed or moved into place), every videoflip
+    turned anew."""
+    if event not in _REREAD:
+        return
+    name = os.path.basename(ROTATION_FILE)
+    if name not in [f.get_basename() for f in (what, other) if f is not None]:
+        return
     turned = screen()
     with _flips_lock:
         live = list(_flips.items())
@@ -187,8 +203,8 @@ def _flip(cam):
             pass
         if not _watch:
             try:  # made on the default main context, whatever the thread
-                mon = Gio.File.new_for_path(ROTATION_FILE).monitor_file(
-                    Gio.FileMonitorFlags.NONE, None)
+                folder = Gio.File.new_for_path(os.path.dirname(ROTATION_FILE))
+                mon = folder.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
                 mon.connect("changed", _turn_all)
                 _watch.append(mon)
             except GLib.Error:
@@ -196,19 +212,48 @@ def _flip(cam):
     return flip
 
 
-def _turned(cam, src):
-    """src -> videoflip in a bin, its pad "src"; src itself where the flip
-    does not link (a picture videoflip does not take, like MJPEG)."""
-    flip = _flip(cam)
-    if flip is None:
-        return src
+def _swap(caps):
+    """caps with width and height swapped: the size before a turn of 90 or
+    270 degrees for the size after it."""
+    text = re.sub(r"(?<![\w-])(width|height)=",
+                  lambda m: ("height" if m.group(1) == "width" else "width") + "=",
+                  caps.to_string())
+    return Gst.Caps.from_string(text)
+
+
+def _turned(cam, src, caps=None, turning=True):
+    """src -> a capsfilter "size" (caps, the picture after the turn, swapped
+    for the source where it turns by 90 or 270) -> a videoflip (where
+    turning) in a bin, its pad "src". The caps come before the flip, so the
+    camera itself is asked for that size. What does not link is left out
+    (caps the source does not give, a picture videoflip does not take, like
+    MJPEG); with nothing linked, src itself."""
     box = Gst.Bin.new(None)
     box.add(src)
-    box.add(flip)
-    if not src.link(flip):
+    last = src
+    if caps is not None:
+        if not isinstance(caps, Gst.Caps):
+            caps = Gst.Caps.from_string(caps)
+        if turning and _turn(cam, screen()) in (90, 270):
+            caps = _swap(caps)
+        size = Gst.ElementFactory.make("capsfilter", "size")
+        size.set_property("caps", caps)
+        box.add(size)
+        if src.link(size):
+            last = size
+        else:
+            box.remove(size)
+    flip = _flip(cam) if turning else None
+    if flip is not None:
+        box.add(flip)
+        if last.link(flip):
+            last = flip
+        else:
+            box.remove(flip)
+    if last is src:
         box.remove(src)
         return src
-    box.add_pad(Gst.GhostPad.new("src", flip.get_static_pad("src")))
+    box.add_pad(Gst.GhostPad.new("src", last.get_static_pad("src")))
     return box
 
 
@@ -218,7 +263,12 @@ class Camera:
     new GStreamer element for it: its source, with contrast (None: the
     camera's own) where it is libcamerasrc, and a videoflip turning the
     picture with the screen (a bin) where ROTATION_FILE is or mount is not
-    0. source() is the source alone."""
+    0. make(caps=...) puts a size (caps of the picture as it comes out,
+    like "video/x-raw,width=480,height=360") right after the source, before
+    the videoflip, so the camera gives that size itself; turned by 90 or
+    270 when made, its width and height are swapped for the source, and
+    a later turn turns the picture of that size, never opening the camera
+    again. source() is the source alone."""
 
     def __init__(self, name, make, front=False, contrast=CONTRAST, mount=0):
         self.name, self.front, self.contrast, self.mount = name, front, contrast, mount
@@ -230,12 +280,14 @@ class Camera:
             _contrast(src, self.contrast)
         return src
 
-    def make(self):
+    def make(self, caps=None):
         src = self.source()
-        if src is None or Gst is None or not isinstance(src, Gst.Element) or \
-                not (_turn(self, 0) or os.path.exists(ROTATION_FILE)):
+        if src is None or Gst is None or not isinstance(src, Gst.Element):
             return src
-        return _turned(self, src)
+        turning = bool(_turn(self, 0) or os.path.exists(ROTATION_FILE))
+        if not turning and caps is None:
+            return src
+        return _turned(self, src, caps, turning)
 
 
 def _mount(device):

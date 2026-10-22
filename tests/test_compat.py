@@ -606,6 +606,7 @@ class Compat(unittest.TestCase):
         with the sensor's mounting; it follows the file while it plays;
         without the file there is no turn."""
         camera, Gst = gst_or_skip(self)
+        from gi.repository import Gio
         rotation = camera.ROTATION_FILE
         assert rotation == os.path.join(top, "xdg-run", "haltia", "rotation")
 
@@ -637,6 +638,13 @@ class Compat(unittest.TestCase):
         assert camera._turn(camera.Camera("x", None, mount=90), 270) == 0
         plain = back.make()
         assert plain.get_factory().get_name() == "videotestsrc"  # no file, not turned
+        sized = back.make(caps="video/x-raw,width=160,height=120")  # a size, no turn
+        assert sized.get_by_name("turn") is None
+        assert sized.get_by_name("size").get_property("caps").get_structure(0) \
+            .get_int("width") == (True, 160)
+        swapped = camera._swap(Gst.Caps.from_string("video/x-raw,width=480,height=[1,360]"))
+        s = swapped.get_structure(0)
+        assert s.get_int("height") == (True, 480) and s.has_field("width"), swapped.to_string()
         if Gst.ElementFactory.find("videoflip") is None:
             return
 
@@ -673,6 +681,42 @@ class Compat(unittest.TestCase):
             write("270")
             pump(lambda: direction(flip) == 3)
             assert direction(flip) == 3
+            # The folder is watched: only the rotation file turns the picture.
+            camera._direct(flip, 0)
+            other = Gio.File.new_for_path(rotation + ".part")
+            camera._turn_all(None, other, None, Gio.FileMonitorEvent.CHANGED)
+            assert direction(flip) == 0
+            camera._turn_all(None, other, Gio.File.new_for_path(rotation),
+                             Gio.FileMonitorEvent.RENAMED)
+            assert direction(flip) == 3
+            for text, want in (("90", 1), ("normal", 0), ("180", 2)):  # replaced quickly
+                write(text)
+                pump(lambda: direction(flip) == want)
+                assert direction(flip) == want, text
+
+            # A size asked for comes right after the source, before the flip,
+            # its width and height swapped for the source turned by 90: the
+            # camera itself gives it, and the picture comes out in it.
+            write("90")
+            made = back.make(caps="video/x-raw,width=160,height=120")
+            size = made.get_by_name("size")
+            before = size.get_static_pad("sink").get_peer().get_parent_element()
+            after = size.get_static_pad("src").get_peer().get_parent_element()
+            assert before.get_factory().get_name() == "videotestsrc"
+            assert after.get_name() == "turn"
+            assert size.get_property("caps").get_structure(0).get_int("width") == (True, 120)
+            pipe = Gst.Pipeline.new(None)
+            sink = Gst.ElementFactory.make("appsink", None)
+            pipe.add(made)
+            pipe.add(sink)
+            assert made.link(sink)
+            pipe.set_state(Gst.State.PLAYING)
+            try:
+                got = sink.emit("try-pull-sample", 5 * Gst.SECOND)
+            finally:
+                pipe.set_state(Gst.State.NULL)
+            s = got.get_caps().get_structure(0)
+            assert (s.get_int("width"), s.get_int("height")) == ((True, 160), (True, 120))
         finally:
             for path in (rotation, rotation + ".part"):
                 if os.path.exists(path):
