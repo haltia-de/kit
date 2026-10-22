@@ -46,6 +46,7 @@ class Worker:
                                     else "")
         for name in ("WAYLAND_DISPLAY", "DISPLAY"):  # nothing here reaches the display
             env.pop(name, None)
+        env["HALTIA_CRASH"] = "no"  # a file that crashes a parser is not a crash (crash.py)
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "haltia_kit.worker"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

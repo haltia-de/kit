@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-2.0
 """haltia-kit through its interface: settings, awake, the fake player,
 the player's awake rule, kinds, thumbnails, pictures, the vault, the camera,
-formats, sharing. Run: python3 tests/test_compat.py, or python3 -m unittest from the
+formats, sharing, crash records. Run: python3 tests/test_compat.py, or python3 -m unittest from the
 tests folder (PyGObject with GdkPixbuf, Pillow; no display, no libmpv, no
 sound card, no keyring, no camera needed). The tests run in the order of
 their numbers: later ones use the files of earlier ones."""
+import json
 import os
 import stat
 import struct
@@ -20,6 +21,7 @@ import zlib
 top = tempfile.mkdtemp()
 os.environ["XDG_CACHE_HOME"] = os.path.join(top, "cache")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(top, "config")
+os.environ["XDG_STATE_HOME"] = os.path.join(top, "state")  # the crash records
 # The shell's rotation file, never the real one: its folder here, no file yet.
 os.environ["XDG_RUNTIME_DIR"] = os.path.join(top, "xdg-run")
 os.makedirs(os.path.join(top, "xdg-run", "haltia"), mode=0o700)
@@ -192,7 +194,8 @@ class Compat(unittest.TestCase):
         assert s.get_bool("odd", True) is True  # unreadable: the default
         assert s.get("folder") == "/home/user/Загрузки/MAX"
         assert s.set("buzz", False) and s.set("quality", "high")
-        assert "buzz = no" in open(s.path).read()
+        with open(s.path) as fh:
+            assert "buzz = no" in fh.read()
         assert settings.Settings("max").get("quality") == "high"
         with open(s.path, "w") as fh:
             fh.write("not an ini file at all")
@@ -875,6 +878,93 @@ class Compat(unittest.TestCase):
         with open(received) as fh:
             assert fh.read() == pic + "\n"
 
+    def test_18_crash(self):
+        """An uncaught exception, in the main thread or another, leaves a
+        record with the whole traceback and the log's tail; a segfault, the
+        faulthandler file; a clean run, nothing; only the newest stay."""
+        from haltia_kit import crash
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        state = os.path.join(top, "crash-state")
+        crashes = os.path.join(state, "haltia", "crashes")
+        log = os.path.join(top, "crash.log")
+        with open(log, "w") as fh:
+            fh.writelines("line %d\n" % i for i in range(500))
+        env = dict(os.environ, XDG_STATE_HOME=state, PYTHONPATH=here)
+        script = os.path.join(top, "crash_app.py")  # a file: its lines are in the traceback
+
+        def run(code):
+            with open(script, "w") as fh:
+                fh.write("import haltia_kit\nfrom haltia_kit import crash\n"
+                         "crash.install('test.App', version='1.2.3', log=%r)\n%s" % (log, code))
+            return subprocess.run([sys.executable, script], cwd=here, env=env,
+                                  capture_output=True, text=True, timeout=60)
+
+        def records():
+            out = {}
+            for name in sorted(os.listdir(crashes)):
+                with open(os.path.join(crashes, name), encoding="utf-8") as fh:
+                    out[name] = fh.read()
+            return out
+
+        done = run("print('fine')")
+        assert done.returncode == 0 and done.stdout == "fine\n", done.stderr
+        assert records() == {}  # a clean run leaves nothing
+
+        failed = run("def inner():\n    raise ValueError('broken')\n"
+                     "try:\n    {}['key']\nexcept KeyError:\n    inner()\n")
+        assert failed.returncode == 1 and "ValueError: broken" in failed.stderr  # still said
+        [(name, text)] = records().items()
+        assert name.startswith("test.App-") and name.endswith(".json"), name
+        rec = json.loads(text)
+        assert rec["app"] == "test.App" and rec["version"] == "1.2.3", rec
+        assert rec["exception"] == "ValueError: broken", rec["exception"]
+        assert "raise ValueError" in rec["traceback"] and "KeyError" in rec["traceback"]
+        assert "in inner" in rec["traceback"] and rec["thread"] == "MainThread"
+        assert rec["log_tail"] == "".join("line %d\n" % i for i in range(300, 500))
+        assert rec["time"] and rec["pid"] and rec["kit"]
+        os.unlink(os.path.join(crashes, name))
+
+        threaded = run("import threading\ndef work():\n    raise RuntimeError('in a thread')\n"
+                       "t = threading.Thread(target=work, name='worker')\nt.start()\nt.join()\n")
+        assert threaded.returncode == 0, threaded.stderr
+        [(name, text)] = records().items()
+        rec = json.loads(text)
+        assert rec["exception"] == "RuntimeError: in a thread" and rec["thread"] == "worker"
+        assert "in work" in rec["traceback"]
+        os.unlink(os.path.join(crashes, name))
+
+        interrupted = run("raise KeyboardInterrupt")
+        assert interrupted.returncode != 0 and records() == {}  # Ctrl+C is no crash
+
+        segfault = run("import ctypes\nctypes.string_at(0)\n")
+        assert segfault.returncode < 0, segfault.returncode
+        [(name, text)] = records().items()
+        assert name.startswith("test.App-") and name.endswith(".fault"), name
+        assert text.startswith("# haltia-crash app=test.App version=1.2.3 pid=")
+        assert "Segmentation fault" in text and "crash_app.py" in text, text
+        segfault_name = name
+
+        killed = subprocess.Popen(  # killed: just the header, removed at the next start
+            [sys.executable, "-c", "import haltia_kit, time\nprint(1, flush=True)\n"
+             "time.sleep(60)"], cwd=here, env=env, stdout=subprocess.PIPE, text=True)
+        try:
+            assert killed.stdout.readline() == "1\n"
+            assert len(records()) == 2
+        finally:
+            killed.kill()
+            killed.wait()
+            killed.stdout.close()
+        for i in range(25):  # older crashes
+            path = os.path.join(crashes, "old.App-%02d.json" % i)
+            with open(path, "w") as fh:
+                fh.write("{}\n")
+            os.utime(path, (1000 + i, 1000 + i))
+        run("raise OSError('again')")
+        left = records()
+        assert len(left) == crash.KEEP and segfault_name in left, sorted(left)
+        assert not [n for n in left if n.startswith("python-")]  # the killed run's
+        assert "old.App-05.json" not in left and "old.App-24.json" in left
+        assert len([n for n in left if n.startswith("test.App-")]) == 2
     def test_18_camera_colour(self):
         """A still of its own waits until the colour stops changing (a
         camera's white balance settling); the viewfinder's photo is the
