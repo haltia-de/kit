@@ -824,12 +824,13 @@ class Compat(unittest.TestCase):
             pump(lambda: vf.state == camera.ON)
             assert vf.state == camera.ON
             taken = []
-            camera.capture = boom
+            real_still = camera._still
+            camera.capture = camera._still = boom  # from the picture or its own: failed
             try:
                 vf.capture(taken.append)
                 pump(lambda: taken)
             finally:
-                camera.capture = real
+                camera.capture, camera._still = real, real_still
             assert taken == [None] and vf.failure.state == camera.FAILED
             pump(lambda: vf.state == camera.ON)
             assert vf.state == camera.ON and not vf.taking  # the picture back
@@ -872,6 +873,118 @@ class Compat(unittest.TestCase):
         pump(lambda: os.path.exists(received))
         with open(received) as fh:
             assert fh.read() == pic + "\n"
+
+    def test_18_camera_colour(self):
+        """A still of its own waits until the colour stops changing (a
+        camera's white balance settling); the viewfinder's photo is the
+        next frame of its picture, not a pipeline started anew."""
+        camera, Gst = gst_or_skip(self)
+        red, steps = (200, 40, 30), 40
+
+        def plain():
+            src = Gst.ElementFactory.make("videotestsrc", None)
+            src.set_property("is-live", True)
+            Gst.util_set_object_arg(src, "pattern", "solid-color")
+            src.set_property("foreground-color",
+                             0xff000000 | red[0] << 16 | red[1] << 8 | red[2])
+            return src
+
+        def settling():
+            """Red, grey at first and coloured over the first frames."""
+            src = plain()
+            balance = Gst.ElementFactory.make("videobalance", None)
+            balance.set_property("saturation", 0.0)
+            n = [0]
+
+            def probe(_pad, _info):
+                n[0] += 1  # for the next frame
+                balance.set_property("saturation", min(n[0], steps) / steps)
+                return Gst.PadProbeReturn.OK
+
+            src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, probe)
+            box = Gst.Bin.new(None)
+            box.add(src)
+            box.add(balance)
+            src.link(balance)
+            box.add_pad(Gst.GhostPad.new("src", balance.get_static_pad("src")))
+            return box
+
+        def near(rgb, want, by=10):
+            return all(abs(a - b) <= by for a, b in zip(rgb, want))
+
+        def mean_of(path):
+            with Image.open(path) as im:
+                small = im.convert("RGB").resize((8, 8))
+                px = list(small.getdata())
+            return tuple(sum(p[c] for p in px) / len(px) for c in range(3))
+
+        if Gst.ElementFactory.find("videobalance") is not None:
+            cam = camera.Camera("Тест", settling)
+            got = camera.capture(cam, where=os.path.join(top, "settled"), settle=5)
+            assert near(mean_of(got), red), mean_of(got)  # not a frame still settling
+
+        assert camera._steady([(1.0, 2.0, 3.0)] * (camera.STEADY_OVER + 1))
+        assert not camera._steady([(1.0, 2.0, 3.0)] * camera.STEADY_OVER)
+        assert not camera._steady([(9.0, 2.0, 3.0)] + [(1.0, 2.0, 3.0)] * camera.STEADY_OVER)
+        caps = Gst.Caps.from_string("video/x-raw,format=RGBA,width=2,height=1")
+        pixels = bytes([10, 20, 30, 255, 30, 40, 50, 255])
+        sample = Gst.Sample.new(Gst.Buffer.new_wrapped(pixels), caps, None, None)
+        assert camera._mean(sample) == (20.0, 30.0, 40.0)
+
+        flat = camera.Camera("Тест", plain)
+        states = []
+        pv = camera.Preview(flat, lambda *_a: None, states.append)
+        snapped = []
+        assert pv.snap(snapped.append) is False and not snapped  # no picture yet
+        pv.start()
+        pump(lambda: pv.state == camera.ON)
+        try:
+            assert pv.snap(snapped.append)
+            pump(lambda: snapped)
+            assert len(snapped) == 1 and snapped[0][:2] == (320, 240), snapped[:1]
+            pv.snap(snapped.append)
+        finally:
+            pv.stop()  # a snap still waiting is told None
+        pump(lambda: len(snapped) == 2, wait=1)
+        assert len(snapped) == 2
+
+        real_folder, real_capture = camera.folder, camera.capture
+        camera.folder = lambda: os.path.join(top, "snapped")
+
+        def boom(*_a, **_k):
+            raise AssertionError("a pipeline of its own for a still")
+
+        camera.capture = boom
+        try:
+            done = []
+            camera._shoot(flat, 6, lambda path, state: done.append((path, state)),
+                          frame=snapped[0])
+            pump(lambda: done)
+            path, state = done[0]
+            assert state is None and os.path.dirname(path) == os.path.join(top, "snapped")
+            with Image.open(path) as im:
+                assert im.size == (320, 240) and im.getexif()[0x0112] == 6
+            assert near(mean_of(path), red), mean_of(path)
+
+            from gi.repository import Gdk, Gtk
+            if Gdk.Display.get_default() is None:
+                return  # the widget itself needs a display
+            vf = camera.Viewfinder(flat)
+            win = Gtk.OffscreenWindow()
+            win.add(vf)
+            win.show_all()
+            try:
+                pump(lambda: vf.state == camera.ON)
+                taken = []
+                vf.capture(taken.append)
+                pump(lambda: taken)
+                assert taken and taken[0] and vf.failure is None, taken
+                assert near(mean_of(taken[0]), red), mean_of(taken[0])
+                assert vf.state == camera.ON and not vf.taking  # the picture went on
+            finally:
+                win.destroy()
+        finally:
+            camera.folder, camera.capture = real_folder, real_capture
 
 
 if __name__ == "__main__":

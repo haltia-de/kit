@@ -60,6 +60,12 @@ background stays mapped, so without it the camera stays held and a video
 call in another program finds it busy. `Viewfinder.capture(done)` always
 calls `done` on the main thread: the path, or `None` with `.failure` the
 `CameraError` (`BUSY`, `NONE`, `FAILED`); the picture comes back after it.
+While the picture plays, the photo is its next frame (`Preview.snap`), at
+the viewfinder's size, so its colours are the ones the person saw; only
+when none plays does it run `capture()`. `capture()` starts the camera
+itself, so it waits for libcamera's white balance and exposure to settle:
+at least `SETTLE` (30) frames, then until the mean colour of the frames
+stops changing (at most `SETTLE_MORE` frames more).
 `camera.available()` says whether there is a camera at all, so a program
 can hide its camera button; it blocks while it asks the devices (a second
 or more with libcamera) and keeps the answer for 30 seconds. Photos go to
