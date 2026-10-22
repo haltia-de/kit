@@ -64,7 +64,11 @@ calls `done` on the main thread: the path, or `None` with `.failure` the
 can hide its camera button; it blocks while it asks the devices (a second
 or more with libcamera) and keeps the answer for 30 seconds. Photos go to
 the XDG pictures folder + `Камера`, as `IMG_YYYYMMDD_HHMMSS.jpg`, unmirrored
-even from a front camera (only the viewfinder mirrors). The tests use
+even from a front camera (only the viewfinder mirrors). A libcamerasrc
+gets libcamera's control Contrast, `camera.CONTRAST` (1.25, against the
+milky soft ISP picture), where it has it as the property `contrast`;
+`cameras(contrast=...)` or `Camera(..., contrast=...)` changes it, `None`
+leaves the camera's own. The tests use
 `videotestsrc` in place of a camera.
 
 ## Sending a file to another program
