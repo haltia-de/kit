@@ -9,10 +9,12 @@ program.
     cameras(contrast=CONTRAST)  the cameras found: libcamera first, else
                              V4L2; libcamerasrc gets the control Contrast
                              (None: the camera's own)
-    capture(camera=None)     a still at full resolution, saved as JPEG in
-                             <XDG pictures>/Камера -> its path
+    capture(camera=None)     a still at full resolution from a pipeline of
+                             its own, once its colour settles, saved as JPEG
+                             in <XDG pictures>/Камера -> its path
     Viewfinder(camera=None)  a widget: the camera's picture, scaled to it,
-                             mirrored for a front camera
+                             mirrored for a front camera; its capture()
+                             saves the next frame of that picture
     take_photo(parent=None)  a photo the person kept -> its path, or None
 
 The pipelines run on GStreamer's threads (libcamerasrc, or v4l2src where
@@ -27,6 +29,14 @@ video call in another program finds the camera free. A webcam that gives
 only MJPEG is decoded with jpegdec. A front
 camera is mirrored only in the viewfinder: its photos are saved as the
 camera sees them, unmirrored, like the photos of other camera apps.
+
+The picture turns with the screen: the shell writes how far the device
+is turned clockwise from its natural position (normal, 90, 180 or 270) in
+ROTATION_FILE, $XDG_RUNTIME_DIR/haltia/rotation. A videoflip after the
+source (in the viewfinder, in capture(), and in the element of
+Camera.make() where the file is or the sensor is mounted turned) turns the
+picture by that and by the sensor's mounting (libcamera's Rotation), and
+follows the file while it plays. Without the file (a PC): no turn.
 
 A camera another program holds is the state BUSY, never an exception into
 GTK: the viewfinder says so itself and tells changed(state), so a program
@@ -50,6 +60,7 @@ a Viewfinder takes the photo in this process.
 import os
 import threading
 import time
+import weakref
 
 import gi
 
@@ -85,11 +96,22 @@ RAW, JPEG = "video/x-raw", "image/jpeg"  # the kinds of picture a camera gives
 PREVIEW_RAW = RAW + ",width=[1,1280],height=[1,1280]"
 PREVIEW_JPEG = JPEG + ",width=[1,1280],height=[1,1280]"  # a webcam of MJPEG only
 SEEN_FOR = 30  # seconds available() keeps its answer
-SETTLE = 5  # frames let go by before a still: exposure and focus settle
+# A still from a pipeline of its own: at least SETTLE frames let go by (1 s
+# at 30 fps: libcamera's soft-ISP white balance and exposure converge, raw
+# Bayer is green before them), then more until the mean colour of the last
+# STEADY_OVER frames stays within STEADY of the latest, at most SETTLE_MORE.
+SETTLE = 30
+STEADY, STEADY_OVER, SETTLE_MORE = 2.0, 5, 60
+MEAN_GRID = 16  # rows and columns of the pixels the mean is taken from
 RANK = {"libcamerasrc": 0, "v4l2src": 1}  # the others: pipewiresrc and the like
 # libcamera's control Contrast for libcamerasrc: its soft ISP gives a milky
 # picture at 1.0 (no colour matrix); a little more is a table, almost free.
 CONTRAST = 1.25
+# How far the device is turned clockwise, written by the shell.
+ROTATION_FILE = os.path.join(GLib.get_user_runtime_dir(), "haltia", "rotation")
+SCREEN = {"normal": 0, "90": 90, "180": 180, "270": 270}
+# videoflip's video-direction for a clockwise turn of the picture.
+DIRECTIONS = {0: "identity", 90: "90r", 180: "180", 270: "90l"}
 
 
 class CameraError(Exception):
@@ -106,20 +128,131 @@ def _contrast(src, value):
     src.set_property("contrast", float(value))
 
 
+def screen():
+    """How far the device is turned clockwise (0, 90, 180, 270), as the
+    shell writes it in ROTATION_FILE; 0 without the file."""
+    try:
+        with open(ROTATION_FILE, encoding="utf-8") as fh:
+            return SCREEN.get(fh.read().strip(), 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _turn(cam, turned):
+    """The clockwise turn (0, 90, 180, 270) of cam's picture for the device
+    turned clockwise by turned: the sensor's mounting, then the screen's.
+    The same for a front and a back camera: the picture is turned before
+    the viewfinder mirrors it, and with the opposite sign a front camera
+    came out upside down (Lenovo B8000-H, 22 Oct 2026)."""
+    mount = int(round((cam.mount or 0) / 90.0)) * 90
+    return (mount + turned) % 360
+
+
+_flips = weakref.WeakKeyDictionary()  # the videoflips playing -> their camera
+_flips_lock = threading.Lock()
+_watch = []  # the monitor of ROTATION_FILE, made once
+
+
+def _direct(flip, degrees):
+    if flip.find_property("video-direction") is not None:
+        Gst.util_set_object_arg(flip, "video-direction", DIRECTIONS[degrees])
+    else:  # GStreamer before 1.10
+        Gst.util_set_object_arg(flip, "method", {0: "none", 90: "clockwise", 180: "rotate-180",
+                                                 270: "counterclockwise"}[degrees])
+
+
+def _turn_all(*_a):
+    """On the main thread, the file changed: every videoflip turned anew."""
+    turned = screen()
+    with _flips_lock:
+        live = list(_flips.items())
+    for flip, cam in live:
+        _direct(flip, _turn(cam, turned))
+
+
+def _flip(cam):
+    """A videoflip turning cam's picture with the screen, followed while it
+    lives -> the element, or None without videoflip."""
+    flip = Gst.ElementFactory.make("videoflip", "turn")
+    if flip is None:
+        return None
+    _direct(flip, _turn(cam, screen()))
+    # An attribute keeps the Python wrapper alive as long as the element,
+    # so the weak entry lasts as long as the element does.
+    flip.haltia_camera = cam.name
+    with _flips_lock:
+        try:
+            _flips[flip] = cam
+        except TypeError:  # an object without weak references: not followed
+            pass
+        if not _watch:
+            try:  # made on the default main context, whatever the thread
+                mon = Gio.File.new_for_path(ROTATION_FILE).monitor_file(
+                    Gio.FileMonitorFlags.NONE, None)
+                mon.connect("changed", _turn_all)
+                _watch.append(mon)
+            except GLib.Error:
+                pass
+    return flip
+
+
+def _turned(cam, src):
+    """src -> videoflip in a bin, its pad "src"; src itself where the flip
+    does not link (a picture videoflip does not take, like MJPEG)."""
+    flip = _flip(cam)
+    if flip is None:
+        return src
+    box = Gst.Bin.new(None)
+    box.add(src)
+    box.add(flip)
+    if not src.link(flip):
+        box.remove(src)
+        return src
+    box.add_pad(Gst.GhostPad.new("src", flip.get_static_pad("src")))
+    return box
+
+
 class Camera:
     """A camera: name, front (faces the person: mirrored in the viewfinder),
-    make() -> a new GStreamer source element for it, with contrast (None:
-    the camera's own) where it is libcamerasrc."""
+    mount (the sensor's clockwise turn, libcamera's Rotation), make() -> a
+    new GStreamer element for it: its source, with contrast (None: the
+    camera's own) where it is libcamerasrc, and a videoflip turning the
+    picture with the screen (a bin) where ROTATION_FILE is or mount is not
+    0. source() is the source alone."""
 
-    def __init__(self, name, make, front=False, contrast=CONTRAST):
-        self.name, self.front, self.contrast = name, front, contrast
+    def __init__(self, name, make, front=False, contrast=CONTRAST, mount=0):
+        self.name, self.front, self.contrast, self.mount = name, front, contrast, mount
         self._make = make
 
-    def make(self):
+    def source(self):
         src = self._make()
         if src is not None:
             _contrast(src, self.contrast)
         return src
+
+    def make(self):
+        src = self.source()
+        if src is None or Gst is None or not isinstance(src, Gst.Element) or \
+                not (_turn(self, 0) or os.path.exists(ROTATION_FILE)):
+            return src
+        return _turned(self, src)
+
+
+def _mount(device):
+    """The sensor's clockwise turn in degrees from the device's properties
+    (libcamera's Rotation, where its provider gives it), else 0."""
+    props = device.get_properties()
+    if props is None:
+        return 0
+    for key in ("api.libcamera.rotation", "api.libcamera.Rotation", "camera.rotation",
+                "rotation"):
+        try:
+            value = props.get_value(key)
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return 0
 
 
 def _front(device):
@@ -155,7 +288,7 @@ def cameras(contrast=CONTRAST):
         kind = element.get_factory().get_name() if element else None
         found.append((RANK.get(kind, len(RANK)),
                       Camera(dev.get_display_name(), lambda d=dev: d.create_element(None),
-                             _front(dev), contrast)))
+                             _front(dev), contrast, _mount(dev))))
     if not found:
         return []
     # The same camera is often seen by several: only the best kind is kept.
@@ -235,14 +368,17 @@ def _sizes(src):
     return best
 
 
-def _pipeline(src, caps, out):
-    """src (caps: raw, or JPEG decoded here) -> convert and scale -> out ->
-    an appsink keeping the latest frame: (pipeline, sink)."""
+def _pipeline(src, caps, out, flip=None):
+    """src (caps: raw, or JPEG decoded here) -> convert, turn (flip, a
+    videoflip, if any) and scale -> out -> an appsink keeping the latest
+    frame: (pipeline, sink)."""
     names = (["jpegdec"] if caps.startswith(JPEG) else []) + \
         ["videoconvert", "videoscale", "capsfilter", "appsink"]
     parts = [Gst.ElementFactory.make(n, None) for n in names]
     if any(p is None for p in parts):
         raise CameraError(FAILED)
+    if flip is not None:
+        parts.insert(len(parts) - 3, flip)  # after videoconvert
     filt, sink = parts[-2:]
     filt.set_property("caps", Gst.Caps.from_string(out))
     sink.set_property("max-buffers", 1)
@@ -289,6 +425,44 @@ def _frame(sample):
     return w, h, b"".join(data[offset + y * stride:offset + y * stride + row] for y in range(h))
 
 
+def _mean(sample, grid=MEAN_GRID):
+    """The mean (red, green, blue) of grid x grid pixels of a sample of 4
+    bytes a pixel: a few rows copied, never the whole frame."""
+    s = sample.get_caps().get_structure(0)
+    w, h = s.get_int("width")[1], s.get_int("height")[1]
+    buf = sample.get_buffer()
+    offset, stride = _layout(sample, w)
+    row = w * 4
+    if stride < row or offset + stride * (h - 1) + row > buf.get_size():
+        offset, stride = 0, row
+    rows, cols = min(grid, h), min(grid, w)
+    sums, n = [0, 0, 0], 0
+    for j in range(rows):
+        line = buf.extract_dup(offset + (2 * j + 1) * h // (2 * rows) * stride, row)
+        for i in range(cols):
+            at = (2 * i + 1) * w // (2 * cols) * 4
+            for c in range(3):
+                sums[c] += line[at + c]
+            n += 1
+    return tuple(v / max(n, 1) for v in sums)
+
+
+def _steady(means):
+    """The last STEADY_OVER + 1 means within STEADY of the latest."""
+    if len(means) <= STEADY_OVER:
+        return False
+    last = means[-1]
+    return all(abs(m[c] - last[c]) < STEADY for m in means[-STEADY_OVER - 1:] for c in range(3))
+
+
+def _still(frame, where=None, orientation=1):
+    """A viewfinder's frame (width, height, bytes of RGBA) saved as a photo
+    -> its path."""
+    w, h, data = frame
+    image = Image.frombuffer("RGBA", (w, h), data, "raw", "RGBA", 0, 1).convert("RGB")
+    return _save(image, where or folder(), orientation)
+
+
 def _save(image, where, orientation):
     """image as a JPEG in where, named by the date and time, written whole
     or not at all -> its path."""
@@ -323,14 +497,18 @@ def _save(image, where, orientation):
 def capture(camera=None, where=None, orientation=1, settle=SETTLE, timeout=10):
     """A still at the camera's full resolution, saved as a JPEG with the
     EXIF orientation given (1 upright, 6 turned right, 8 left, 3 upside
-    down) in where (folder()) -> its path. Blocks for about a second: call
-    it from a thread, or use Viewfinder.capture. Raises CameraError."""
+    down) in where (folder()) -> its path. The camera starts here, so the
+    still waits for its colour to settle: at least settle frames, then
+    until the mean colour stops changing (at most SETTLE_MORE frames more).
+    Blocks for a second or more: call it from a thread, or use
+    Viewfinder.capture, which takes the frame from its running picture.
+    Raises CameraError."""
     if Gst is None:
         raise CameraError(NONE)
     cam = camera or _first()
     if cam is None:
         raise CameraError(NONE)
-    src = cam.make()
+    src = cam.source()
     if src is None:
         raise CameraError(FAILED)
     _role(src, "still-capture")
@@ -341,15 +519,19 @@ def capture(camera=None, where=None, orientation=1, settle=SETTLE, timeout=10):
         kind = JPEG
     size = sizes.get(kind)
     caps = kind + (",width=%d,height=%d" % size if size else "")
-    pipe, sink = _pipeline(src, caps, RAW + ",format=RGBx,pixel-aspect-ratio=1/1")
-    sample, frames = None, 0
+    pipe, sink = _pipeline(src, caps, RAW + ",format=RGBx,pixel-aspect-ratio=1/1", _flip(cam))
+    sample, frames, means = None, 0, []
     try:
         pipe.set_state(Gst.State.PLAYING)
         end = time.monotonic() + timeout
-        while frames <= settle and time.monotonic() < end:
+        while time.monotonic() < end:
             got = sink.emit("try-pull-sample", Gst.SECOND // 5)
             if got is not None:
                 sample, frames = got, frames + 1
+                if frames + STEADY_OVER > settle:  # only the frames that may be compared
+                    means = means[-STEADY_OVER:] + [_mean(got)]
+                if frames > settle and (_steady(means) or frames > settle + SETTLE_MORE):
+                    break
                 continue
             msg = pipe.get_bus().pop_filtered(Gst.MessageType.ERROR)
             if msg is not None:  # busy, gone: said at once, not at the timeout
@@ -370,7 +552,8 @@ class Preview:
     height, bytes of RGBA) gets the latest frame and changed(state) the
     state (OFF, ON, BUSY, NONE, FAILED), both through post (on the main
     thread). camera None: the first of cameras(). start() returns at once:
-    the camera is found and its pipeline made on a thread of its own."""
+    the camera is found and its pipeline made on a thread of its own.
+    snap(got) hands the next frame to got."""
 
     def __init__(self, camera, shown, changed, post=None):
         self.camera, self.shown, self.changed = camera, shown, changed
@@ -383,7 +566,30 @@ class Preview:
         self.opening = 0  # the start() being opened, 0 for none
         self.frame = None
         self.pending = False
+        self.wanted = None  # (gen, got) of a snap() waiting for its frame
         self.lock = threading.Lock()
+
+    def snap(self, got, wait=3):
+        """got(frame) is called once: with the next frame (width, height,
+        bytes of RGBA, turned like the picture, never mirrored) on a
+        GStreamer thread, or with None on the main thread when the picture
+        stops or no frame comes in wait seconds. False, got not called,
+        when no picture is playing."""
+        if self.pipe is None or self.state != ON:
+            return False
+        wanted = (self.gen, got)
+        with self.lock:
+            self.wanted = wanted
+        GLib.timeout_add(int(wait * 1000), lambda: (self._unsnap(wanted), False)[1])
+        return True
+
+    def _unsnap(self, wanted=None):
+        """The snap() wanted (any for None) told None, if it still waits."""
+        with self.lock:
+            if self.wanted is None or (wanted is not None and self.wanted is not wanted):
+                return
+            wanted, self.wanted = self.wanted, None
+        wanted[1](None)
 
     def start(self):
         if self.pipe is not None or self.opening:
@@ -400,13 +606,14 @@ class Preview:
             cam = self.camera or (_first() if Gst is not None else None)
             if cam is None:
                 raise CameraError(NONE)
-            src = cam.make()
+            src = cam.source()
             if src is None:
                 raise CameraError(FAILED)
             _role(src, "view-finder")
             sizes = _sizes(src)
             caps = PREVIEW_JPEG if JPEG in sizes and RAW not in sizes else PREVIEW_RAW
-            pipe, sink = _pipeline(src, caps, RAW + ",format=RGBA,pixel-aspect-ratio=1/1")
+            pipe, sink = _pipeline(src, caps, RAW + ",format=RGBA,pixel-aspect-ratio=1/1",
+                                   _flip(cam))
             got = cam, pipe, sink, None
         except CameraError as e:
             got = None, None, None, e.state
@@ -442,6 +649,7 @@ class Preview:
         self.pipe.set_state(Gst.State.NULL)  # the camera off
         self.bus.remove_signal_watch()
         self.pipe = self.bus = None
+        self._unsnap()
         self._state(state)
 
     def _fail(self, msg):
@@ -461,11 +669,16 @@ class Preview:
         if sample is None:
             return Gst.FlowReturn.OK
         frame = (gen,) + _frame(sample)
+        snapped = None
         with self.lock:
             self.frame = frame
-            if self.pending:
-                return Gst.FlowReturn.OK
-            self.pending = True
+            if self.wanted is not None and self.wanted[0] == gen:
+                snapped, self.wanted = self.wanted[1], None
+            pending, self.pending = self.pending, True
+        if snapped is not None:
+            snapped(frame[1:])
+        if pending:
+            return Gst.FlowReturn.OK
         self.post(self._deliver)
         return Gst.FlowReturn.OK
 
@@ -490,7 +703,9 @@ class Viewfinder(Gtk.Overlay):
     The camera is on only while the widget is mapped and not paused:
     pause() when the window stops being active, resume() when it is active
     again. changed(state) is told the state; capture(done) takes a photo
-    with the orientation in .orientation and always calls done on the main
+    with the orientation in .orientation (the next frame of the picture
+    playing, so its colours are those the person saw; capture() where none
+    plays) and always calls done on the main
     thread: with its path, or with None and .failure the CameraError
     (state BUSY, NONE or FAILED; the viewfinder says it too). After a
     photo, taken or not, the picture comes back."""
@@ -572,10 +787,26 @@ class Viewfinder(Gtk.Overlay):
         if self.taking:
             return
         self.taking = True
+        self.note.set_text("Снимаю…")
+
+        def got(frame):
+            self.preview.post(lambda: (self._shot(done, frame), False)[1])
+
+        if not self.preview.snap(got):
+            got(None)
+
+    def _shot(self, done, frame):
+        """The next frame of the picture saved, its colours as the person
+        saw them; without one (no picture playing) a still of its own."""
+        def taken(path, state):
+            self._taken(done, path, state)
+
+        if frame is not None:
+            _shoot(None, self.orientation, taken, frame=frame)
+            return
         cam = self.preview.used or self.preview.camera
         self.preview.stop()  # one pipeline at a time holds the camera
-        self.note.set_text("Снимаю…")
-        _shoot(cam, self.orientation, lambda path, state: self._taken(done, path, state))
+        _shoot(cam, self.orientation, taken)
 
     def _taken(self, done, path, state):
         self.taking = False
@@ -590,15 +821,19 @@ class Viewfinder(Gtk.Overlay):
                 self.preview.start()  # the picture back, after a failed still too
 
 
-def _shoot(cam, orientation, done, post=None):
-    """capture() on a thread; done(path, None) or done(None, state) through
-    post (on the main thread) whatever happened there."""
+def _shoot(cam, orientation, done, post=None, frame=None):
+    """capture() on a thread, or frame (a viewfinder's) saved there;
+    done(path, None) or done(None, state) through post (on the main
+    thread) whatever happened there."""
     post = post or GLib.idle_add
 
     def work():
         path, state = None, FAILED
         try:
-            path, state = capture(cam, orientation=orientation), None
+            if frame is not None:
+                path, state = _still(frame, orientation=orientation), None
+            else:
+                path, state = capture(cam, orientation=orientation), None
         except CameraError as e:
             state = e.state
         except Exception:  # unexpected: FAILED, never «Снимаю…» for ever

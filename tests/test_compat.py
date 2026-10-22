@@ -22,6 +22,9 @@ top = tempfile.mkdtemp()
 os.environ["XDG_CACHE_HOME"] = os.path.join(top, "cache")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(top, "config")
 os.environ["XDG_STATE_HOME"] = os.path.join(top, "state")  # the crash records
+# The shell's rotation file, never the real one: its folder here, no file yet.
+os.environ["XDG_RUNTIME_DIR"] = os.path.join(top, "xdg-run")
+os.makedirs(os.path.join(top, "xdg-run", "haltia"), mode=0o700)
 # The programs share sends to: fake .desktop files, made before GLib first
 # reads the folders (the system's stay after them, for the MIME database).
 os.environ["XDG_DATA_HOME"] = os.path.join(top, "data")
@@ -598,6 +601,83 @@ class Compat(unittest.TestCase):
         assert made("videotestsrc", True) == {}
         assert camera.Camera("Нет", lambda: None).make() is None
 
+    def test_12d_camera_turn(self):
+        """The picture turns with the screen as the shell writes it, and
+        with the sensor's mounting; it follows the file while it plays;
+        without the file there is no turn."""
+        camera, Gst = gst_or_skip(self)
+        rotation = camera.ROTATION_FILE
+        assert rotation == os.path.join(top, "xdg-run", "haltia", "rotation")
+
+        def write(text):  # as the shell would: whole, by a rename
+            with open(rotation + ".part", "w") as fh:
+                fh.write(text + "\n")
+            os.replace(rotation + ".part", rotation)
+
+        class Device:
+            def __init__(self, props):
+                self.props = props
+
+            def get_properties(self):
+                return self
+
+            def get_value(self, key):
+                return self.props.get(key)
+
+        assert camera._mount(Device({"api.libcamera.rotation": "270"})) == 270
+        assert camera._mount(Device({"api.libcamera.Rotation": 90})) == 90
+        assert camera._mount(Device({})) == 0
+
+        back = camera.Camera("Задняя", live_source(Gst))
+        front = camera.Camera("Передняя", live_source(Gst), front=True, mount=270)
+        assert camera.screen() == 0  # no file: a PC
+        assert camera._turn(back, 0) == 0 and camera._turn(front, 0) == 270
+        assert camera._turn(back, 90) == 90 and camera._turn(front, 90) == 0
+        assert camera._turn(front, 270) == 180  # the same sign as the back camera
+        assert camera._turn(camera.Camera("x", None, mount=90), 270) == 0
+        plain = back.make()
+        assert plain.get_factory().get_name() == "videotestsrc"  # no file, not turned
+        if Gst.ElementFactory.find("videoflip") is None:
+            return
+
+        def direction(flip):
+            return int(flip.get_property("video-direction"))
+
+        try:
+            write("garbage")
+            assert camera.screen() == 0
+            write("90")
+            assert camera.screen() == 90
+            got = camera.capture(back, where=os.path.join(top, "turned"), settle=1)
+            with Image.open(got) as im:
+                assert im.size == (240, 320), im.size  # videotestsrc's 320 x 240, turned
+
+            frames, states = [], []
+            pv = camera.Preview(back, lambda w, h, d: frames.append((w, h)), states.append)
+            pv.start()
+            pump(lambda: frames)
+            try:
+                assert frames and frames[0] == (240, 320), frames
+                flip = pv.pipe.get_by_name("turn")
+                assert direction(flip) == 1  # 90r
+                write("normal")  # turned back while it plays
+                pump(lambda: direction(flip) == 0)
+                assert direction(flip) == 0
+            finally:
+                pv.stop()
+
+            write("180")
+            made = back.make()  # a program's own pipeline: a bin, turned too
+            flip = made.get_by_name("turn")
+            assert made.get_static_pad("src") is not None and direction(flip) == 2
+            write("270")
+            pump(lambda: direction(flip) == 3)
+            assert direction(flip) == 3
+        finally:
+            for path in (rotation, rotation + ".part"):
+                if os.path.exists(path):
+                    os.remove(path)
+
     def test_13_formats(self):
         assert formats.plural(1, "файл", "файла", "файлов") == "1 файл"
         assert formats.plural(3, "файл", "файла", "файлов") == "3 файла"
@@ -748,12 +828,13 @@ class Compat(unittest.TestCase):
             pump(lambda: vf.state == camera.ON)
             assert vf.state == camera.ON
             taken = []
-            camera.capture = boom
+            real_still = camera._still
+            camera.capture = camera._still = boom  # from the picture or its own: failed
             try:
                 vf.capture(taken.append)
                 pump(lambda: taken)
             finally:
-                camera.capture = real
+                camera.capture, camera._still = real, real_still
             assert taken == [None] and vf.failure.state == camera.FAILED
             pump(lambda: vf.state == camera.ON)
             assert vf.state == camera.ON and not vf.taking  # the picture back
@@ -884,6 +965,117 @@ class Compat(unittest.TestCase):
         assert not [n for n in left if n.startswith("python-")]  # the killed run's
         assert "old.App-05.json" not in left and "old.App-24.json" in left
         assert len([n for n in left if n.startswith("test.App-")]) == 2
+    def test_18_camera_colour(self):
+        """A still of its own waits until the colour stops changing (a
+        camera's white balance settling); the viewfinder's photo is the
+        next frame of its picture, not a pipeline started anew."""
+        camera, Gst = gst_or_skip(self)
+        red, steps = (200, 40, 30), 40
+
+        def plain():
+            src = Gst.ElementFactory.make("videotestsrc", None)
+            src.set_property("is-live", True)
+            Gst.util_set_object_arg(src, "pattern", "solid-color")
+            src.set_property("foreground-color",
+                             0xff000000 | red[0] << 16 | red[1] << 8 | red[2])
+            return src
+
+        def settling():
+            """Red, grey at first and coloured over the first frames."""
+            src = plain()
+            balance = Gst.ElementFactory.make("videobalance", None)
+            balance.set_property("saturation", 0.0)
+            n = [0]
+
+            def probe(_pad, _info):
+                n[0] += 1  # for the next frame
+                balance.set_property("saturation", min(n[0], steps) / steps)
+                return Gst.PadProbeReturn.OK
+
+            src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, probe)
+            box = Gst.Bin.new(None)
+            box.add(src)
+            box.add(balance)
+            src.link(balance)
+            box.add_pad(Gst.GhostPad.new("src", balance.get_static_pad("src")))
+            return box
+
+        def near(rgb, want, by=10):
+            return all(abs(a - b) <= by for a, b in zip(rgb, want))
+
+        def mean_of(path):
+            with Image.open(path) as im:
+                small = im.convert("RGB").resize((8, 8))
+                px = list(small.getdata())
+            return tuple(sum(p[c] for p in px) / len(px) for c in range(3))
+
+        if Gst.ElementFactory.find("videobalance") is not None:
+            cam = camera.Camera("Тест", settling)
+            got = camera.capture(cam, where=os.path.join(top, "settled"), settle=5)
+            assert near(mean_of(got), red), mean_of(got)  # not a frame still settling
+
+        assert camera._steady([(1.0, 2.0, 3.0)] * (camera.STEADY_OVER + 1))
+        assert not camera._steady([(1.0, 2.0, 3.0)] * camera.STEADY_OVER)
+        assert not camera._steady([(9.0, 2.0, 3.0)] + [(1.0, 2.0, 3.0)] * camera.STEADY_OVER)
+        caps = Gst.Caps.from_string("video/x-raw,format=RGBA,width=2,height=1")
+        pixels = bytes([10, 20, 30, 255, 30, 40, 50, 255])
+        sample = Gst.Sample.new(Gst.Buffer.new_wrapped(pixels), caps, None, None)
+        assert camera._mean(sample) == (20.0, 30.0, 40.0)
+
+        flat = camera.Camera("Тест", plain)
+        states = []
+        pv = camera.Preview(flat, lambda *_a: None, states.append)
+        snapped = []
+        assert pv.snap(snapped.append) is False and not snapped  # no picture yet
+        pv.start()
+        pump(lambda: pv.state == camera.ON)
+        try:
+            assert pv.snap(snapped.append)
+            pump(lambda: snapped)
+            assert len(snapped) == 1 and snapped[0][:2] == (320, 240), snapped[:1]
+            pv.snap(snapped.append)
+        finally:
+            pv.stop()  # a snap still waiting is told None
+        pump(lambda: len(snapped) == 2, wait=1)
+        assert len(snapped) == 2
+
+        real_folder, real_capture = camera.folder, camera.capture
+        camera.folder = lambda: os.path.join(top, "snapped")
+
+        def boom(*_a, **_k):
+            raise AssertionError("a pipeline of its own for a still")
+
+        camera.capture = boom
+        try:
+            done = []
+            camera._shoot(flat, 6, lambda path, state: done.append((path, state)),
+                          frame=snapped[0])
+            pump(lambda: done)
+            path, state = done[0]
+            assert state is None and os.path.dirname(path) == os.path.join(top, "snapped")
+            with Image.open(path) as im:
+                assert im.size == (320, 240) and im.getexif()[0x0112] == 6
+            assert near(mean_of(path), red), mean_of(path)
+
+            from gi.repository import Gdk, Gtk
+            if Gdk.Display.get_default() is None:
+                return  # the widget itself needs a display
+            vf = camera.Viewfinder(flat)
+            win = Gtk.OffscreenWindow()
+            win.add(vf)
+            win.show_all()
+            try:
+                pump(lambda: vf.state == camera.ON)
+                taken = []
+                vf.capture(taken.append)
+                pump(lambda: taken)
+                assert taken and taken[0] and vf.failure is None, taken
+                assert near(mean_of(taken[0]), red), mean_of(taken[0])
+                assert vf.state == camera.ON and not vf.taking  # the picture went on
+            finally:
+                win.destroy()
+        finally:
+            camera.folder, camera.capture = real_folder, real_capture
 
 
 if __name__ == "__main__":

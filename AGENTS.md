@@ -60,6 +60,12 @@ background stays mapped, so without it the camera stays held and a video
 call in another program finds it busy. `Viewfinder.capture(done)` always
 calls `done` on the main thread: the path, or `None` with `.failure` the
 `CameraError` (`BUSY`, `NONE`, `FAILED`); the picture comes back after it.
+While the picture plays, the photo is its next frame (`Preview.snap`), at
+the viewfinder's size, so its colours are the ones the person saw; only
+when none plays does it run `capture()`. `capture()` starts the camera
+itself, so it waits for libcamera's white balance and exposure to settle:
+at least `SETTLE` (30) frames, then until the mean colour of the frames
+stops changing (at most `SETTLE_MORE` frames more).
 `camera.available()` says whether there is a camera at all, so a program
 can hide its camera button; it blocks while it asks the devices (a second
 or more with libcamera) and keeps the answer for 30 seconds. Photos go to
@@ -70,6 +76,18 @@ milky soft ISP picture), where it has it as the property `contrast`;
 `cameras(contrast=...)` or `Camera(..., contrast=...)` changes it, `None`
 leaves the camera's own. The tests use
 `videotestsrc` in place of a camera.
+
+The picture turns with the screen. The shell writes
+`$XDG_RUNTIME_DIR/haltia/rotation` (`camera.ROTATION_FILE`): `normal`, `90`,
+`180` or `270`, how far the device is turned clockwise from its natural
+position. A `videoflip` after the source in the `Viewfinder`, in
+`capture()` and in the element of `Camera.make()` (a bin with the pad
+`src`, made only where the file is or the sensor is mounted turned; the
+source alone is `Camera.source()`) turns the picture clockwise by the
+sensor's mounting (`Camera.mount`, libcamera's Rotation where the device
+gives it) plus the screen's turn, minus it for a front camera (it looks
+the other way). The file is watched, and the turn follows it while the
+picture plays. Without the file (a PC, Flatpak) there is no turn.
 
 ## Sending a file to another program
 
