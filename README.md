@@ -27,6 +27,8 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 | `haltia_kit.crash` | падения программ для haltia-report в `$XDG_STATE_HOME/haltia/crashes`: необработанное исключение (в любом потоке) — запись `<app>-<время>.json` с полным traceback и последними 200 строками журнала; segfault — файл faulthandler `<app>-<время>-<pid>.fault`; хранятся 20 последних. Включается при импорте kit, `install(app_id, version, log)` уточняет имя, версию и журнал; `HALTIA_CRASH=no` выключает. Предупреждения GLib падениями не считаются |
 | `haltia_kit.testing` | `FakePlayer`, `FakeInhibit`, `FakeKeyring` для тестов программ |
 
+Записи `haltia_kit.crash` читает служба оболочки `haltia-report`. Когда помощник включил отправку, оболочка передаёт отчёт в «Почту».
+
 Зависимости: Python 3, PyGObject с GTK 3 и libsecret (typelib `Secret-1`), Pillow для картинок; для камеры GStreamer
 с plugins-base и plugins-good (`v4l2src`), на устройствах с libcamera — её
 модуль GStreamer (`libcamerasrc`); для звука python-mpv (libmpv),
