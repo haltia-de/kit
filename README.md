@@ -5,10 +5,7 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 оболочку библиотека не знает: вид даёт GTK-тема среды (в Haltia — тема из
 оболочки), связь со средой — через стандарты freedesktop.
 
-Модуль `haltia_kit`, пакет `py3-haltia-kit`. До ADR 0004 это был
-`b8k_compat` (`py3-b8k-compat`): до версии 3.0 старое имя модуля работает
-как псевдоним, пакет заменяет старый при `apk upgrade`, а настройки из
-`~/.config/b8k` переезжают в `~/.config/haltia` при первом чтении.
+Модуль `haltia_kit`, пакет `py3-haltia-kit`.
 
 | Модуль | Что даёт |
 |---|---|
@@ -26,6 +23,8 @@ Linux с GTK 3: программы берут из неё вопросы, нас
 | `haltia_kit.vault` | `Vault(app, folder)`: секреты (токены, cookies) в Secret Service через libsecret — gnome-keyring, KWallet, портал в Flatpak; где его нет, файл 0600 в каталоге программы; закрытая связка ключей — `Locked`, а не файл |
 | `haltia_kit.crash` | падения программ для haltia-report в `$XDG_STATE_HOME/haltia/crashes`: необработанное исключение (в любом потоке) — запись `<app>-<время>.json` с полным traceback и последними 200 строками журнала; segfault — файл faulthandler `<app>-<время>-<pid>.fault`; хранятся 20 последних. Включается при импорте kit, `install(app_id, version, log)` уточняет имя, версию и журнал; `HALTIA_CRASH=no` выключает. Предупреждения GLib падениями не считаются |
 | `haltia_kit.testing` | `FakePlayer`, `FakeInhibit`, `FakeKeyring` для тестов программ |
+
+Записи `haltia_kit.crash` читает служба оболочки `haltia-report`. Когда помощник включил отправку, оболочка передаёт отчёт в «Почту».
 
 Зависимости: Python 3, PyGObject с GTK 3 и libsecret (typelib `Secret-1`), Pillow для картинок; для камеры GStreamer
 с plugins-base и plugins-good (`v4l2src`), на устройствах с libcamera — её
