@@ -20,6 +20,8 @@
     share     targets(path_or_mime), send(path, parent): a file sent to a
               program whose .desktop says X-Haltia-Share=true
     formats   plural, nice_size, nice_duration, nice_date, month (Russian)
+    background  background(fetch, apply, latest=, fallback=, serial=): fetch
+              in a thread, apply(result) in the GTK main loop
     testing   FakePlayer, FakeInhibit, FakeKeyring for programs' own tests
     worker    the reader process the photos module parses files in
     paths     migrate_dirs(old, new): move a program's own folders to its

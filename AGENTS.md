@@ -16,7 +16,7 @@ module name stays as an alias and the packages replace the old one.
 
 - `haltia_kit/`: the modules (`settings`, `dialogs`, `awake`, `sound`,
   `photos`, `pictures`, `gallery`, `camera`, `share`, `formats`, `paths`, `vault`,
-  `worker`, `crash`, `testing`); `README.md`
+  `worker`, `crash`, `background`, `testing`); `README.md`
   has a table of what each one gives.
 - `b8k_compat/`: the alias for the old module name, until 3.0.
 - `tests/test_compat.py`: the tests.
@@ -134,6 +134,20 @@ way (`Gtk.Application.inhibit`, synchronous in GTK 3) is still tried first;
 `app=False` asks logind only. `logind_inhibit_async(what, who, why, mode,
 done, cancellable=None, bus=None)` is the call underneath. The tests serve
 a fake logind on a peer-to-peer D-Bus connection with real fds.
+
+## Work off the GTK thread
+
+`haltia_kit.background.background(fetch, apply=None, fallback=None,
+latest=None, serial=False)` runs `fetch()` in a worker thread and
+`apply(result)` in the default main context through `GLib.idle_add`. fetch
+runs commands, reads files and asks D-Bus, never GTK; anything slower than
+about 50 ms on the GTK thread is a freeze on the tablet. `fallback` is what
+apply gets when fetch raises (without it apply is not called and the error
+goes to stderr); `latest=KEY` applies only the newest call's result of
+that key, so a slow old read never undoes a newer one; `serial=True` queues
+the call for a single worker thread (many small reads at once). Call it
+from the main thread. It is haltia-settings' helper (the shell), shared so
+that programs stop writing their own `Thread` plus `idle_add`.
 
 ## Crashes
 
