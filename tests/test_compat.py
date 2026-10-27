@@ -453,6 +453,54 @@ class Compat(unittest.TestCase):
         finally:
             del sys.modules["mpv"]
 
+    def test_05b_player_time(self):
+        """on_time at most twice a second, the newest never lost: held back
+        to the end of the step, shown before the end, at once after a seek."""
+        times, ended = [], []
+        p = sound.Player("Музыка", on_time=times.append, on_end=lambda: ended.append(times[-1]),
+                         awake=Awake("x", "y", inhibit=testing.FakeInhibit()))
+        p.mpv = FakeMpv()
+        p.mpv.seek = lambda *_a, **_k: None
+        p.play("/m/a.mp3")
+        assert sound.TIME_STEP == 0.5 and p.time_step == 0.5
+        # mpv tells the time every 20 ms for 1.2 s, from its own thread.
+        start = time.monotonic()
+
+        def mpv_thread():
+            for n in range(60):
+                p._time("time-pos", n * 0.02)
+                time.sleep(0.02)
+        t = threading.Thread(target=mpv_thread)
+        t.start()
+        pump(lambda: not t.is_alive() and times and times[-1] == 59 * 0.02, wait=5)
+        t.join()
+        spent = time.monotonic() - start
+        assert times[-1] == 59 * 0.02, times  # the last one came, after the step
+        assert len(times) <= 2 * spent + 2, (len(times), spent, times)
+        assert 2 <= len(times) <= 5, times
+        # A seek: the next time at once, though the step has not passed.
+        n = len(times)
+        p.seek(30)
+        p._time("time-pos", 30.0)
+        pump(lambda: len(times) > n, wait=0.2)
+        assert times[-1] == 30.0, times
+        # One held back, then the end: it shows before on_end.
+        p._time("time-pos", 30.1)
+        assert times[-1] == 30.0
+        p._end(End())
+        pump(lambda: ended)
+        assert ended == [30.1] and times[-1] == 30.1, (ended, times)
+        pump(lambda: False, wait=0.7)
+        assert times.count(30.1) == 1  # and not again later
+        # stop() drops a time held back: nothing after it.
+        p.play("/m/b.mp3")
+        p._time("time-pos", 1.0)
+        pump(lambda: times[-1] == 1.0)
+        p._time("time-pos", 1.1)
+        p.stop()
+        pump(lambda: False, wait=0.7)
+        assert times[-1] == 1.0, times
+
     def test_06_fake_player(self):
         """The fake player programs test with."""
         seen = []

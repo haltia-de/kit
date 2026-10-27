@@ -11,6 +11,10 @@ machine kept awake while it plays (Awake), not while paused.
 The callbacks come on the GTK side (post, GLib.idle_add unless given):
 on_end() when what plays comes to its end, on_error(text) when it could
 not be played or broke off, on_time(seconds) as it plays, on_pause(bool).
+on_time comes at most TIME_STEP apart (mpv tells the time many times a
+second, and each redraw costs on a slow tablet); the newest time is never
+dropped: one held back comes at the end of the step, before on_end, and
+the first after seek() or play() comes at once.
 libmpv is set up for files and streams from anywhere: no playlists that
 reach other files, no youtube-dl, no video, no terminal or key bindings.
 options are further mpv options a program needs (a CDN that wants a
@@ -19,9 +23,14 @@ Raises RuntimeError from play() when libmpv cannot be loaded.
 
 tests: haltia_kit.testing.FakePlayer has the same interface.
 """
+import threading
+import time
+
 from gi.repository import GLib
 
 from .awake import Awake
+
+TIME_STEP = 0.5  # seconds: on_time at most twice a second
 
 
 class Player:
@@ -40,6 +49,11 @@ class Player:
         self.mpv = None
         self.playing = False
         self.paused = False
+        self.time_step = TIME_STEP
+        self._time_lock = threading.Lock()
+        self._time_value = None  # the newest time not yet delivered
+        self._time_next = 0.0  # monotonic: no on_time before this
+        self._time_due = False  # a delivery is on its way
 
     def _call(self, fn, *args):
         if fn:
@@ -59,8 +73,41 @@ class Player:
         return self.mpv
 
     def _time(self, _name, value):
-        if value is not None:
-            self._call(self.on_time, value)
+        """mpv's thread: the newest time kept, a delivery started unless one
+        is on its way (it takes the newest)."""
+        if value is None:
+            return
+        with self._time_lock:
+            self._time_value = value
+            if self._time_due:
+                return
+            self._time_due = True
+            wait = self._time_next - time.monotonic()
+        if wait <= 0:
+            self.post(self._time_deliver)
+        else:
+            GLib.timeout_add(max(1, int(wait * 1000)),
+                             lambda: (self.post(self._time_deliver), False)[1])
+
+    def _time_deliver(self):
+        with self._time_lock:
+            value, self._time_value = self._time_value, None
+            self._time_due = False
+            if value is not None:
+                self._time_next = time.monotonic() + self.time_step
+        if value is not None and self.on_time:
+            self.on_time(value)
+        return False
+
+    def _time_reset(self, keep):
+        """Forget the step: the next time comes at once. keep: deliver the
+        one held back now, else drop it."""
+        if keep:
+            self._time_deliver()
+        with self._time_lock:
+            self._time_value = None
+            self._time_next = 0.0
+            self._time_due = False  # one on its way finds nothing, or the newest
 
     def _pause(self, _name, value):
         self.post(lambda: (self._paused(bool(value)), False)[1])
@@ -79,6 +126,7 @@ class Player:
             self.post(lambda: (self._ended("не удалось проиграть"), False)[1])
 
     def _ended(self, error):
+        self._time_reset(True)  # the last time shows before the end
         self.playing = False
         self._awake()
         if error is None:
@@ -100,6 +148,7 @@ class Player:
         else:
             player.play(what)
         player.pause = False
+        self._time_reset(False)
         self.playing, self.paused = True, False
         self._awake()
 
@@ -117,6 +166,7 @@ class Player:
 
     def seek(self, sec):
         if self.mpv is not None and self.playing:
+            self._time_reset(False)  # the time after the seek, at once
             try:
                 self.mpv.seek(max(0, sec), reference="absolute")
             except Exception:
@@ -142,6 +192,7 @@ class Player:
                 self.mpv.stop()
             except Exception:
                 pass
+        self._time_reset(False)
         self.playing = False
         self._awake()
 
