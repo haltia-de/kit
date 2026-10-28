@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0
 """haltia-kit through its interface: settings, awake, the fake player,
 the player's awake rule, kinds, thumbnails, pictures, the vault, the camera,
-formats, sharing, crash records. Run: python3 tests/test_compat.py, or python3 -m unittest from the
+formats, sharing, crash records, background work. Run: python3 tests/test_compat.py, or python3 -m unittest from the
 tests folder (PyGObject with GdkPixbuf, Pillow; no display, no libmpv, no
 sound card, no keyring, no camera needed). The tests run in the order of
 their numbers: later ones use the files of earlier ones."""
@@ -1321,6 +1321,68 @@ class Compat(unittest.TestCase):
                 win.destroy()
         finally:
             camera.folder, camera.capture = real_folder, real_capture
+
+    def test_19_background(self):
+        """background: fetch in a thread, apply in the main loop, only the
+        newest of a key, the fallback on an error, serial jobs one by one."""
+        from haltia_kit.background import background
+        main = threading.current_thread()
+        where, got = [], []
+
+        def fetch():
+            where.append(threading.current_thread() is main)
+            return 7
+
+        def apply(result):
+            got.append((threading.current_thread() is main, result))
+        background(fetch, apply)
+        time.sleep(0.1)
+        assert where == [False] and got == []  # applied only from the loop
+        pump(lambda: got)
+        assert got == [(True, 7)]
+        # The newest call of a key wins, even when the older one ends later.
+        slow, applied = threading.Event(), []
+        background(lambda: (slow.wait(5), "old")[1], applied.append, latest="k")
+        background(lambda: "new", applied.append, latest="k")
+        pump(lambda: applied)
+        slow.set()
+        time.sleep(0.2)
+        pump(lambda: False, wait=0.2)
+        assert applied == ["new"], applied
+        background(lambda: "other", applied.append, latest="k2")  # keys apart
+        pump(lambda: len(applied) == 2)
+        assert applied == ["new", "other"]
+
+        # An error: the fallback, else nothing.
+        def boom():
+            raise OSError("no such command")
+        got = []
+        background(boom, got.append, fallback="")
+        background(boom, lambda r: got.append("must not"))
+        pump(lambda: got)
+        pump(lambda: False, wait=0.3)
+        assert got == [""], got
+        # Serial: one at a time, in order, each once.
+        busy, most, order, lock = [0], [0], [], threading.Lock()
+
+        def job(n):
+            def run():
+                with lock:
+                    busy[0] += 1
+                    most[0] = max(most[0], busy[0])
+                time.sleep(0.005)
+                with lock:
+                    busy[0] -= 1
+                return n
+            return run
+        for n in range(30):
+            background(job(n), order.append, serial=True)
+        pump(lambda: len(order) == 30)
+        assert order == list(range(30)) and most[0] == 1, (order, most)
+        # apply=None: fetch for its effect only.
+        ran = threading.Event()
+        background(ran.set)
+        assert ran.wait(5)
 
 
 if __name__ == "__main__":
