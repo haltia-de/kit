@@ -3,7 +3,8 @@
 
     settings  Settings(name): ~/.config/haltia/<name>.conf, section [name]
     dialogs   ask, choose, text, info: questions inside the window
-    awake     Awake(who, why): keep the machine from sleeping (logind)
+    awake     Awake(who, why): keep the machine from sleeping (logind);
+              hold_async(done) does not block the GTK thread
     sound     Player: sound through libmpv, awake while it plays
     photos    kind_of, thumbnail (freedesktop thumbnails), pixbuf_of, square,
               Thumbs (small pictures loaded in a thread), Viewer (photos one

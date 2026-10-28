@@ -107,6 +107,110 @@ class DeadReader:
         return None
 
 
+class FakeLogind:
+    """logind's Manager.Inhibit on a peer-to-peer D-Bus connection of its
+    own (no bus daemon), served from a thread with its own main context,
+    returning real fds: the write end of a pipe whose read end it keeps,
+    so released(i) sees every copy of the i-th fd closed. delay: seconds
+    before an answer; refuse: answer with an error."""
+    def __init__(self, delay=0.0):
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.delay, self.refuse = delay, False
+        self.readers, self.answered = [], 0
+        self.address = "unix:path=" + os.path.join(tempfile.mkdtemp(dir=top), "bus")
+        ready = threading.Event()
+        self.thread = threading.Thread(target=self._serve, args=(ready,), daemon=True)
+        self.thread.start()
+        assert ready.wait(5)
+        self.client = Gio.DBusConnection.new_for_address_sync(
+            self.address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT, None, None)
+
+    def _serve(self, ready):
+        Gio, GLib = self.Gio, self.GLib
+        self.context = GLib.MainContext.new()
+        self.context.push_thread_default()
+        self.loop = GLib.MainLoop.new(self.context, False)
+        info = Gio.DBusNodeInfo.new_for_xml(
+            '<node><interface name="org.freedesktop.login1.Manager">'
+            '<method name="Inhibit"><arg type="s" direction="in"/>'
+            '<arg type="s" direction="in"/><arg type="s" direction="in"/>'
+            '<arg type="s" direction="in"/><arg type="h" direction="out"/>'
+            '</method></interface></node>').interfaces[0]
+        self.conns = []
+
+        def connected(_server, conn):
+            self.conns.append(conn)
+            conn.register_object("/org/freedesktop/login1", info, self._inhibit, None, None)
+            return True
+        self.server = Gio.DBusServer.new_sync(self.address, Gio.DBusServerFlags.NONE,
+                                              Gio.dbus_generate_guid(), None, None)
+        self.server.connect("new-connection", connected)
+        self.server.start()
+        ready.set()
+        self.loop.run()
+        self.server.stop()
+        for conn in self.conns:
+            try:
+                conn.close_sync(None)
+            except GLib.Error:
+                pass  # the client closed it first
+        self.context.pop_thread_default()
+
+    def _inhibit(self, _conn, _sender, _path, _iface, _method, _params, invocation):
+        def answer():
+            if self.refuse:
+                invocation.return_dbus_error("org.freedesktop.login1.Error.Failed", "test")
+            else:
+                r, w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+                self.readers.append(r)
+                fds = self.Gio.UnixFDList.new()
+                index = fds.append(w)
+                os.close(w)
+                invocation.return_value_with_unix_fd_list(
+                    self.GLib.Variant("(h)", (index,)), fds)
+            self.answered += 1
+            return False
+        if self.delay:
+            source = self.GLib.Timeout(int(self.delay * 1000))
+            source.set_callback(lambda *_a: answer())
+            source.attach(self.context)
+        else:
+            answer()
+
+    def inhibit_async(self, *args):
+        from haltia_kit import awake
+        awake.logind_inhibit_async(*args, bus=self.client)
+
+    def released(self, index=-1):
+        try:
+            return os.read(self.readers[index], 1) == b""
+        except BlockingIOError:
+            return False
+
+    def leaked(self):
+        """fds of this process on a pipe handed out, other than the readers."""
+        pipes = {"pipe:[%d]" % os.fstat(r).st_ino for r in self.readers}
+        mine = set(self.readers)
+        out = []
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                if int(name) not in mine and os.readlink("/proc/self/fd/" + name) in pipes:
+                    out.append(int(name))
+            except OSError:
+                pass  # the listing's own fd
+        return out
+
+    def close(self):
+        self.client.close_sync(None)
+        self.loop.quit()
+        self.thread.join(5)
+        for fd in self.readers:
+            os.close(fd)
+
+
+
+
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + \
         struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
@@ -221,6 +325,103 @@ class Compat(unittest.TestCase):
         assert a.hold() and inh.held == 1
         a.release()
         assert inh.held == 0 and not a.held
+
+    def test_04b_awake_async(self):
+        """hold_async: logind asked without blocking the main loop, real fds
+        over D-Bus; requests joined, cancelled by release, never held late."""
+        import gc
+        from gi.repository import GLib
+        fake = FakeLogind(delay=0.3)
+        try:
+            def awake(**kw):
+                return Awake("Звонок", "call", app=False, inhibit_async=fake.inhibit_async, **kw)
+            # A slow answer: the main loop keeps running, every waiter is told.
+            a, seen, ticks = awake(), [], []
+            tick = GLib.timeout_add(20, lambda: (ticks.append(1), True)[1])
+            start = time.monotonic()
+            a.hold_async(seen.append)
+            a.hold_async(seen.append)  # joins the request under way
+            assert time.monotonic() - start < 0.1 and not seen and not a.held
+            pump(lambda: seen)
+            GLib.source_remove(tick)
+            assert seen == [True, True] and a.held and fake.answered == 1, seen
+            assert fake.leaked() == [a.fd]  # the one copy, held
+            assert len(ticks) >= 5, ticks  # the loop ran while logind thought
+            a.hold_async(seen.append)  # held already: True, later, not from inside
+            assert seen == [True, True]
+            pump(lambda: len(seen) == 3)
+            assert seen[2] is True and fake.answered == 1
+            a.release()
+            a.release()  # twice: nothing more
+            assert fake.released(0) and not a.held
+            # Released before the answer: the late fd is closed, never held.
+            seen = []
+            a.hold_async(seen.append)
+            a.release()
+            pump(lambda: seen)
+            assert seen == [False] and not a.held
+            pump(lambda: fake.answered == 2)
+            pump(lambda: fake.released(1), wait=2)
+            assert fake.released(1) and not a.held
+            # A newer request after a release: the old answer never overwrites it.
+            seen, newer = [], []
+            a.hold_async(seen.append)
+            a.release()
+            a.hold_async(newer.append)
+            pump(lambda: seen and newer)
+            pump(lambda: fake.answered == 4)
+            gc.collect()
+            assert seen == [False] and newer == [True] and a.held
+            assert fake.released(2) and not fake.released(3)
+            a.release()
+            assert fake.released(3)
+            # A synchronous hold that won meanwhile: the late fd is closed.
+            inh = testing.FakeInhibit()
+            b, seen = awake(inhibit=inh), []
+            b.inhibit_async = fake.inhibit_async
+            b.hold_async(seen.append)
+            assert b.hold() and inh.held == 1
+            pump(lambda: seen)
+            pump(lambda: fake.answered == 5)
+            gc.collect()
+            assert seen == [True] and b.fd == inh.fds[0][0] and fake.released(4)
+            b.release()
+            # Refused: False, no retry by itself; a later hold asks again.
+            fake.refuse, seen = True, []
+            c = awake()
+            c.hold_async(seen.append)
+            pump(lambda: seen)
+            time.sleep(0.4)
+            assert seen == [False] and not c.held and fake.answered == 6
+            fake.refuse = False
+            c.hold_async(seen.append)
+            pump(lambda: len(seen) == 2)
+            assert seen == [False, True] and c.held and fake.answered == 7
+            c.release()
+            assert fake.released(5)
+            # A caller's own synchronous inhibit serves hold_async too, later.
+            inh, seen = testing.FakeInhibit(), []
+            d = Awake("x", "y", inhibit=inh, app=False)
+            d.hold_async(seen.append)
+            assert not seen and inh.held == 0
+            pump(lambda: seen)
+            assert seen == [True] and inh.held == 1
+            d.release()
+            assert inh.held == 0
+            # The application way first, as hold() does.
+            app, seen = FakeApp(True), []
+            e = Awake("x", "y", app=app, inhibit_async=fake.inhibit_async)
+            e.hold_async(seen.append)
+            pump(lambda: seen)
+            assert seen == [True] and app.cookies and fake.answered == 7
+            e.release()
+            assert not app.cookies
+            gc.collect()
+            assert fake.answered == len(fake.readers) + 1  # one refusal
+            assert all(fake.released(i) for i in range(len(fake.readers)))
+            assert not fake.leaked()  # no fd left behind
+        finally:
+            fake.close()
 
     def test_05_player(self):
         """Awake only while playing and not paused (no libmpv: fake mpv)."""

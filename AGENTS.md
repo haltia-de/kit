@@ -118,6 +118,23 @@ contract a receiver keeps:
 The program calling is never offered: its desktop id is its application id
 (`Gio.Application.get_default()`).
 
+## Staying awake from the GTK thread
+
+`Awake.hold()` blocks: logind's `Manager.Inhibit` is asked on the system
+bus synchronously, up to five seconds when the bus does not answer. On the
+GTK thread call `Awake.hold_async(done=None)` instead: the bus and the call
+are Gio's asynchronous ones, the fd comes out of the reply's fd list, and
+`done(held)` runs later on the main context that was the thread's default
+at the call, never from inside `hold_async`. Calls while a request is under
+way join it. `release()` cancels a request under way: a late fd is closed
+at once, and nothing a late answer brings ever takes the place of a release
+or of a newer holder (a `hold()` that won meanwhile). A failure is reported
+once, without retries; the next explicit hold asks again. The application
+way (`Gtk.Application.inhibit`, synchronous in GTK 3) is still tried first;
+`app=False` asks logind only. `logind_inhibit_async(what, who, why, mode,
+done, cancellable=None, bus=None)` is the call underneath. The tests serve
+a fake logind on a peer-to-peer D-Bus connection with real fds.
+
 ## Crashes
 
 Importing `haltia_kit` calls `haltia_kit.crash.install()`, so every program
