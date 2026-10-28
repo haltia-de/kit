@@ -1,3 +1,15 @@
+haltia-kit (2.4.0) unstable; urgency=medium
+
+  * haltia_kit.background: медленная работа в рабочем потоке, результат
+    в главном цикле GTK (#32).
+  * Awake.hold_async и logind_inhibit_async: блокировка logind без
+    остановки потока GTK (#31, #7).
+  * haltia_kit.sound: время в on_time не чаще двух раз в секунду (#33).
+  * haltia_kit.camera: Camera.make(caps=…, sensor=True) сохраняет всё поле
+    зрения датчика (#29).
+
+ -- Haltia <rensomail@gmail.com>  Wed, 28 Oct 2026 18:00:00 +0300
+
 haltia-kit (2.3.1) unstable; urgency=medium
 
   * Картинка камеры поворачивается вместе с экраном; фронтальная камера

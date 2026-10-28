@@ -34,7 +34,7 @@ gives the look through its GTK theme and meets the program through the
 freedesktop standards (.desktop files, logind, Unity LauncherEntry, the
 Secret Service).
 """
-__version__ = "2.2.0"
+__version__ = "2.4.0"
 
 from . import crash  # noqa: E402
 
